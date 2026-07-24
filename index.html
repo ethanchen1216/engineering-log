@@ -1,0 +1,894 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>施工工程日誌系統</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.7.0/dist/tabler-icons.min.css">
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", sans-serif; background: #f0f2f5; color: #1a2332; min-height: 100vh; padding: 1.25rem 1rem 3rem; }
+        .app { max-width: 660px; margin: 0 auto; }
+
+        /* ── 頂部標題列 ── */
+        .topbar { background: #1a2332; border-radius: 10px; padding: 1rem 1.25rem; margin-bottom: 1.25rem; display: flex; align-items: center; gap: 12px; border-left: 5px solid #e8870a; }
+        .topbar-icon { width: 38px; height: 38px; background: rgba(232,135,10,0.15); border-radius: 7px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+        .topbar-icon i { font-size: 22px; color: #e8870a; }
+        .topbar h1 { font-size: 17px; font-weight: 600; color: #f0ece4; }
+        .topbar p  { font-size: 12px; color: #7a8ba0; margin-top: 2px; }
+
+        /* ── 密碼鎖 ── */
+        .lock-screen { min-height: 380px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1rem; padding: 2rem; }
+        .lock-icon { width: 64px; height: 64px; border-radius: 50%; background: #fff4e0; display: flex; align-items: center; justify-content: center; }
+        .lock-icon i { font-size: 32px; color: #e8870a; }
+        .lock-title { font-size: 17px; font-weight: 600; color: #1a2332; }
+        .lock-sub { font-size: 13px; color: #7a8ba0; text-align: center; line-height: 1.6; }
+        .pin-display { display: flex; gap: 8px; height: 14px; align-items: center; }
+        .pin-bullet { width: 10px; height: 10px; border-radius: 50%; background: #d1d5db; transition: background 0.15s; }
+        .pin-bullet.filled { background: #e8870a; }
+        .pin-row { display: flex; gap: 10px; }
+        .pin-dot { width: 52px; height: 52px; border-radius: 8px; border: 1px solid #dde1e7; background: #fff; font-size: 22px; font-weight: 500; color: #1a2332; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: background 0.1s; user-select: none; font-family: inherit; }
+        .pin-dot:hover { background: #f4f6f9; }
+        .pin-dot:active { background: #e9ecef; }
+        .pin-error { font-size: 13px; color: #e74c3c; text-align: center; min-height: 18px; }
+
+        /* ── 卡片 ── */
+        .card { background: #fff; border: 1px solid #e4e8ee; border-radius: 12px; padding: 1rem 1.25rem; margin-bottom: 1rem; }
+        .card.editing { border: 2.5px solid #e8870a !important; background: #fffaf4; outline: 3px solid rgba(232,135,10,0.25); outline-offset: 2px; }
+        .section-label { font-size: 11px; font-weight: 600; color: #9aa5b4; text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 0.85rem; }
+
+        /* ── 表單 ── */
+        .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
+        .field-row.single { grid-template-columns: 1fr; }
+        .field-group label { display: block; font-size: 13px; color: #5c6b7a; margin-bottom: 4px; }
+        .field-group input, .field-group select, .field-group textarea { width: 100%; border: 1px solid #dde1e7; background: #fafbfc; color: #1a2332; border-radius: 6px; padding: 8px 10px; font-size: 14px; font-family: inherit; outline: none; transition: border-color 0.15s, box-shadow 0.15s; }
+        .field-group input:focus, .field-group select:focus, .field-group textarea:focus { border-color: #e8870a; box-shadow: 0 0 0 3px rgba(232,135,10,0.12); background: #fff; }
+        .field-group textarea { resize: vertical; min-height: 90px; line-height: 1.6; }
+        .field-group select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%23888' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 10px center; padding-right: 28px; }
+
+        /* ── 類別按鈕 ── */
+        .category-toggle { display: flex; gap: 8px; }
+        .cat-btn { flex: 1; border: 1px solid #dde1e7; background: #fafbfc; color: #5c6b7a; border-radius: 6px; padding: 9px 0; font-size: 14px; font-weight: 500; cursor: pointer; font-family: inherit; transition: all 0.15s; }
+        .cat-btn:hover { background: #f0f2f5; }
+        .cat-btn.active { background: #fff4e0; border-color: #e8870a; color: #c06800; }
+
+        /* ── 出工項目 ── */
+        .worktype-toggle { display: flex; flex-wrap: wrap; gap: 7px; }
+        .wt-btn { border: 1px solid #dde1e7; background: #fafbfc; color: #5c6b7a; border-radius: 6px; padding: 7px 13px; font-size: 14px; font-weight: 500; cursor: pointer; font-family: inherit; transition: all 0.15s; white-space: nowrap; text-align: center; }
+        .wt-btn:hover { background: #f0f2f5; border-color: #bbc5d0; }
+        .wt-btn.active { background: #fff4e0; border-color: #e8870a; color: #c06800; }
+        /* 泥作子選項 */
+        .mud-sub-card { background: #f8f5ee; border: 1px solid #e8d8b0; border-radius: 8px; padding: 10px 12px; margin-top: 8px; }
+        .mud-sub-label { font-size: 11px; color: #9a7a3a; font-weight: 600; margin-bottom: 8px; letter-spacing: 0.05em; }
+        .mud-sub-toggle { display: flex; flex-wrap: wrap; gap: 7px; }
+        .mud-sub-btn { border: 1px solid #d4b87a; background: #fffdf5; color: #7a5a20; border-radius: 6px; padding: 6px 12px; font-size: 13px; font-weight: 500; cursor: pointer; font-family: inherit; transition: all 0.15s; white-space: nowrap; }
+        .mud-sub-btn:hover { background: #fff4e0; }
+        .mud-sub-btn.active { background: #fff4e0; border-color: #e8870a; color: #c06800; }
+        .worker-count-area { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+        .worker-count-row { display: flex; align-items: center; gap: 10px; }
+        .worker-count-row .wc-label { font-size: 13px; color: #1a2332; font-weight: 500; min-width: 80px; white-space: nowrap; }
+        .worker-count-row input { width: 90px; flex-shrink: 0; border: 1px solid #dde1e7; background: #fafbfc; color: #1a2332; border-radius: 6px; padding: 6px 10px; font-size: 14px; font-family: inherit; outline: none; }
+        .worker-count-row input:focus { border-color: #e8870a; box-shadow: 0 0 0 3px rgba(232,135,10,0.12); }
+        .worker-count-row .wc-unit { font-size: 13px; color: #9aa5b4; }
+
+        /* ── 按鈕 ── */
+        .btn-primary { background: #e8870a; color: #fff; border: none; border-radius: 6px; padding: 9px 18px; font-size: 14px; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; transition: background 0.15s; font-family: inherit; }
+        .btn-primary:hover { background: #d07809; }
+        .btn-ghost { background: none; border: 1px solid #dde1e7; color: #5c6b7a; border-radius: 6px; padding: 7px 13px; font-size: 13px; cursor: pointer; display: inline-flex; align-items: center; gap: 5px; transition: background 0.15s; font-family: inherit; }
+        .btn-ghost:hover { background: #f4f6f9; color: #1a2332; }
+        .btn-danger { background: none; border: 1px solid #fbc8c8; color: #e74c3c; border-radius: 6px; padding: 4px 9px; font-size: 12px; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; transition: background 0.15s; font-family: inherit; }
+        .btn-danger:hover { background: #fff0f0; }
+        .btn-edit { background: none; border: 1px solid #c5d4e8; color: #3d6fa0; border-radius: 6px; padding: 4px 9px; font-size: 12px; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; transition: background 0.15s; font-family: inherit; }
+        .btn-edit:hover { background: #eef4fb; }
+        .form-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
+
+        /* ── 預覽 ── */
+        .preview-label { font-size: 12px; font-weight: 600; color: #e8870a; margin: 12px 0 6px; display: flex; align-items: center; gap: 5px; }
+        .preview-card { background: #fffbf5; border: 1px solid #f0c070; border-radius: 8px; padding: 12px 14px; margin-bottom: 10px; }
+        .preview-card .p-date { font-size: 12px; color: #9aa5b4; margin-bottom: 4px; }
+        .preview-card .p-project { font-size: 15px; font-weight: 600; color: #1a2332; margin-bottom: 6px; }
+        .preview-card .p-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+        .preview-card .p-badge { background: #f0f2f5; border: 1px solid #e4e8ee; border-radius: 20px; padding: 2px 10px; font-size: 12px; color: #5c6b7a; }
+        .preview-card .p-work-items { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 6px; }
+        .preview-card .p-work-item { background: #fff4e0; border: 1px solid rgba(232,135,10,0.25); border-radius: 6px; padding: 3px 10px; font-size: 13px; color: #c06800; font-weight: 500; }
+        .preview-card .p-content { font-size: 13px; color: #5c6b7a; line-height: 1.6; white-space: pre-wrap; }
+        .preview-placeholder { color: #9aa5b4; font-size: 13px; }
+
+        /* ── 統計 ── */
+        .stats-row { display: grid; grid-template-columns: repeat(3,1fr); gap: 8px; margin-bottom: 1rem; }
+        .stat-card { background: #fff; border: 1px solid #e4e8ee; border-radius: 8px; padding: 10px 12px; }
+        .stat-card .val { font-size: 24px; font-weight: 600; color: #1a2332; }
+        .stat-card .lbl { font-size: 11px; color: #9aa5b4; margin-top: 2px; }
+
+        /* ── 工具列 ── */
+        .toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 0.75rem; }
+        .search-wrap { flex: 1; position: relative; }
+        .search-wrap i { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); font-size: 15px; color: #9aa5b4; }
+        .search-wrap input { padding-left: 30px; height: 36px; width: 100%; border-radius: 6px; border: 1px solid #dde1e7; background: #fff; color: #1a2332; font-size: 13px; font-family: inherit; outline: none; }
+        .search-wrap input:focus { border-color: #e8870a; }
+
+        /* ── 篩選標籤 ── */
+        .tag-filter { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 0.85rem; }
+        .tag { background: #fff; border: 1px solid #dde1e7; border-radius: 20px; padding: 3px 10px; font-size: 12px; color: #5c6b7a; cursor: pointer; transition: all 0.1s; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 140px; position: relative; user-select: none; }
+        .tag:hover { border-color: #e8870a; color: #e8870a; }
+        .tag.active { background: #fff4e0; border-color: #e8870a; color: #c06800; font-weight: 500; }
+        .tag-delete-mode { animation: tag-shake 0.4s ease; }
+        @keyframes tag-shake { 0%,100%{transform:rotate(0)} 25%{transform:rotate(-3deg)} 75%{transform:rotate(3deg)} }
+        .tag-del-btn { position: absolute; top: -6px; right: -6px; width: 16px; height: 16px; background: #e74c3c; color: #fff; border-radius: 50%; border: none; font-size: 10px; font-weight: 700; cursor: pointer; display: flex; align-items: center; justify-content: center; line-height: 1; padding: 0; }
+
+        /* ── 日誌條目 ── */
+        .log-item { background: #fff; border: 1px solid #e4e8ee; border-radius: 12px; padding: 1rem 1.25rem; margin-bottom: 10px; border-left: 3px solid #2cc3a6; }
+        .log-item-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; }
+        .log-item-actions { display: flex; gap: 6px; flex-shrink: 0; }
+        .log-item-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .log-date { font-size: 12px; color: #9aa5b4; display: flex; align-items: center; gap: 4px; }
+        .badge-weather { background: #f0f2f5; border: 1px solid #e4e8ee; border-radius: 20px; padding: 2px 8px; font-size: 11px; color: #5c6b7a; }
+        .log-project { font-size: 15px; font-weight: 600; color: #1a2332; margin-bottom: 6px; }
+        .log-work-info { margin-bottom: 6px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+        .badge-work-cat { background: #1a2332; color: #f0ece4; border-radius: 20px; padding: 4px 12px; font-size: 14px; font-weight: 500; }
+        .badge-work { background: #f0f2f5; border: 1px solid #e4e8ee; border-radius: 20px; padding: 3px 10px; font-size: 12px; color: #5c6b7a; display: inline-flex; align-items: center; gap: 4px; }
+        .log-content { font-size: 13px; color: #5c6b7a; line-height: 1.65; white-space: pre-wrap; }
+        .empty-state { text-align: center; padding: 3rem 1rem; color: #9aa5b4; }
+        .empty-state i { font-size: 44px; margin-bottom: 12px; display: block; color: #dde1e7; }
+
+        /* ── 彈窗 ── */
+        .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 1rem; }
+        .modal-box { background: #fff; border-radius: 14px; padding: 1.5rem 1.25rem 1.25rem; max-width: 320px; width: 100%; box-shadow: 0 8px 32px rgba(0,0,0,0.18); text-align: center; }
+        .modal-icon { width: 52px; height: 52px; border-radius: 50%; background: #fff0f0; display: flex; align-items: center; justify-content: center; margin: 0 auto 12px; }
+        .modal-icon i { font-size: 26px; color: #e74c3c; }
+        .modal-title { font-size: 16px; font-weight: 600; color: #1a2332; margin-bottom: 8px; }
+        .modal-desc { font-size: 13px; color: #5c6b7a; line-height: 1.7; margin-bottom: 1.25rem; }
+        .modal-desc strong { color: #e74c3c; }
+        .modal-actions { display: flex; gap: 8px; }
+        .modal-actions .btn-ghost { flex: 1; justify-content: center; }
+        .modal-btn-delete { flex: 1; background: #e74c3c; color: #fff; border: none; border-radius: 6px; padding: 9px 14px; font-size: 14px; font-weight: 600; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px; transition: background 0.15s; font-family: inherit; }
+        .modal-btn-delete:hover { background: #c0392b; }
+
+        /* ── Toast ── */
+        .toast { position: fixed; bottom: 1.5rem; left: 50%; transform: translateX(-50%); background: #1a2332; color: #f0ece4; padding: 10px 18px; border-radius: 8px; font-size: 13px; display: none; align-items: center; gap: 8px; border: 1px solid rgba(232,135,10,0.3); z-index: 1001; white-space: nowrap; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
+        .toast.show { display: flex; }
+        .toast i { color: #e8870a; font-size: 16px; }
+
+        /* ── 載入遮罩 ── */
+        .loading-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(26,35,50,0.7); z-index: 9998; display: none; flex-direction: column; align-items: center; justify-content: center; color: #fff; gap: 12px; font-size: 0.95rem; }
+        .spinner { width: 36px; height: 36px; border: 4px solid rgba(255,255,255,0.2); border-left-color: #e8870a; border-radius: 50%; animation: spin 0.8s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+
+<div class="app">
+    <div class="topbar">
+        <div class="topbar-icon"><i class="ti ti-building-warehouse"></i></div>
+        <div>
+            <h1>施工工程日誌</h1>
+            <p>Construction Field Log System &nbsp;<span id="roleTag" style="font-weight:600"></span></p>
+        </div>
+    </div>
+
+    <!-- 密碼鎖 -->
+    <div class="card" id="lockScreen">
+        <div class="lock-screen">
+            <div class="lock-icon"><i class="ti ti-lock"></i></div>
+            <div class="lock-title">請輸入存取密碼</div>
+            <div class="lock-sub">本系統含工程機密資料<br>請輸入 6 位數密碼以繼續</div>
+            <div class="pin-display" id="pinDisplay">
+                <div class="pin-bullet" id="b0"></div><div class="pin-bullet" id="b1"></div>
+                <div class="pin-bullet" id="b2"></div><div class="pin-bullet" id="b3"></div>
+                <div class="pin-bullet" id="b4"></div><div class="pin-bullet" id="b5"></div>
+            </div>
+            <div class="pin-row">
+                <div class="pin-dot" onclick="pinPress(1)">1</div>
+                <div class="pin-dot" onclick="pinPress(2)">2</div>
+                <div class="pin-dot" onclick="pinPress(3)">3</div>
+            </div>
+            <div class="pin-row">
+                <div class="pin-dot" onclick="pinPress(4)">4</div>
+                <div class="pin-dot" onclick="pinPress(5)">5</div>
+                <div class="pin-dot" onclick="pinPress(6)">6</div>
+            </div>
+            <div class="pin-row">
+                <div class="pin-dot" onclick="pinPress(7)">7</div>
+                <div class="pin-dot" onclick="pinPress(8)">8</div>
+                <div class="pin-dot" onclick="pinPress(9)">9</div>
+            </div>
+            <div class="pin-row">
+                <div class="pin-dot" style="opacity:0;pointer-events:none"></div>
+                <div class="pin-dot" onclick="pinPress(0)">0</div>
+                <div class="pin-dot" onclick="pinBackspace()"><i class="ti ti-backspace" style="font-size:20px;color:#5c6b7a"></i></div>
+            </div>
+            <div class="pin-error" id="pinError"></div>
+        </div>
+    </div>
+
+    <!-- 主應用 -->
+    <div id="mainApp" style="display:none">
+
+        <!-- 表單 -->
+        <div class="card" id="formCard">
+            <div class="section-label" id="formLabel">新增日誌</div>
+            <div class="field-row">
+                <div class="field-group">
+                    <label for="logDate">日期</label>
+                    <input type="date" id="logDate" onchange="livePreview()">
+                </div>
+                <div class="field-group">
+                    <label for="weather">天氣</label>
+                    <select id="weather" onchange="livePreview()">
+                        <option value="晴天">☀️ 晴天</option>
+                        <option value="多雲">⛅ 多雲</option>
+                        <option value="陰天">☁️ 陰天</option>
+                        <option value="小雨">🌦️ 小雨</option>
+                        <option value="豪雨">🌧️ 豪雨</option>
+                        <option value="雷陣雨">⛈️ 雷陣雨</option>
+                        <option value="颱風">🌀 颱風</option>
+                    </select>
+                </div>
+            </div>
+            <div class="field-row single">
+                <div class="field-group">
+                    <label for="projectName">專案 / 工地名稱</label>
+                    <input type="text" id="projectName" list="projectHistory" placeholder="例：辦公大樓興建工程" autocomplete="off" oninput="livePreview()">
+                    <datalist id="projectHistory"></datalist>
+                </div>
+            </div>
+            <div class="field-row single">
+                <div class="field-group">
+                    <label>類別</label>
+                    <div class="category-toggle">
+                        <button type="button" class="cat-btn active" data-cat="結構" onclick="selectCategory('結構')">結構</button>
+                        <button type="button" class="cat-btn" data-cat="裝修" onclick="selectCategory('裝修')">裝修</button>
+                    </div>
+                </div>
+            </div>
+            <div class="field-row single">
+                <div class="field-group">
+                    <label>出工項目 <span style="font-size:11px;color:#9aa5b4;font-weight:400">（可複選，選後填入各項人數）</span></label>
+                    <div class="worktype-toggle" id="workTypeToggle"></div>
+                    <div id="workerCountArea"></div>
+                </div>
+            </div>
+            <div class="field-row single">
+                <div class="field-group">
+                    <label for="content">備註</label>
+                    <textarea id="content" placeholder="例：進場水泥 50 包，現場已清運..." oninput="livePreview()"></textarea>
+                </div>
+            </div>
+            <div>
+                <div class="preview-label">📋 資料預覽</div>
+                <div class="preview-card" id="previewCard"><span class="preview-placeholder">填寫上方資料後，預覽將即時顯示於此。</span></div>
+            </div>
+            <div class="form-actions">
+                <button class="btn-ghost" id="cancelEditBtn" style="display:none" onclick="cancelEdit()"><i class="ti ti-x"></i> 取消修改</button>
+                <button class="btn-ghost" onclick="clearForm()"><i class="ti ti-eraser"></i> 清除</button>
+                <button class="btn-primary" onclick="saveLog()"><i class="ti ti-device-floppy"></i> 確認儲存</button>
+            </div>
+        </div>
+
+        <!-- 統計 -->
+        <div class="stats-row">
+            <div class="stat-card"><div class="val" id="statTotal">0</div><div class="lbl">總筆數</div></div>
+            <div class="stat-card"><div class="val" id="statMonth">0</div><div class="lbl">本月筆數</div></div>
+            <div class="stat-card"><div class="val" id="statProjects">0</div><div class="lbl">專案數量</div></div>
+        </div>
+
+        <!-- 搜尋 -->
+        <div class="toolbar">
+            <div class="search-wrap">
+                <i class="ti ti-search"></i>
+                <input type="text" id="searchInput" placeholder="搜尋專案或施工內容..." oninput="renderLogs()">
+            </div>
+            <button class="btn-ghost" id="btnExport" onclick="exportCSV()" style="display:none">
+                <i class="ti ti-download"></i> 匯出
+            </button>
+        </div>
+
+        <div class="tag-filter" id="tagFilter"></div>
+        <div id="logList"></div>
+    </div>
+</div>
+
+<!-- 刪除確認彈窗 -->
+<div class="modal-overlay" id="deleteModal" style="display:none" onclick="closeDeleteModal()">
+    <div class="modal-box" onclick="event.stopPropagation()">
+        <div class="modal-icon"><i class="ti ti-alert-triangle"></i></div>
+        <div class="modal-title">確定要刪除此專案？</div>
+        <div class="modal-desc">即將刪除專案<br><strong id="modalProjectName"></strong><br>的所有日誌紀錄，此操作無法復原。</div>
+        <div class="modal-actions">
+            <button class="btn-ghost" onclick="closeDeleteModal()"><i class="ti ti-x"></i> 取消</button>
+            <button class="modal-btn-delete" onclick="confirmDeleteProject()"><i class="ti ti-trash"></i> 確定刪除</button>
+        </div>
+    </div>
+</div>
+
+<div class="toast" id="toast"><i class="ti ti-circle-check" id="toastIcon"></i><span id="toastMsg">已儲存</span></div>
+<div id="loading" class="loading-overlay"><div class="spinner"></div><div id="loadingText">同步中...</div></div>
+
+<script>
+    const GAS_URL = "https://script.google.com/macros/s/AKfycbz6JPTD3E5IYZ8SN0Qw4stIx4fslAbNSsDWcmRI6rtw0RmJ-XVoOU9m1PAUHflyla2N/exec";
+    const HASH_WORKER = "5eef3925";
+    const HASH_ADMIN  = "626a3455";
+
+    const WORK_TYPES = {
+        "結構": ["鋼筋","水電","壓送","土方","鷹架","安全支撐","組工","打石工","雜項"],
+        "裝修": ["泥作","門窗工程","防水","崁縫","油漆","扶手","石材","木地板","電梯","浴室天花板","金屬欄杆","玻璃","矽利康","鋁格柵/包版","抿石子","組工","打石工","雜項"]
+    };
+    // 泥作子項目
+    const MUDWORK_SUBS = ["貼磚","抹縫","打底","粉光","雜項"];
+    // 泥作子項目前綴
+    const MUDWORK_PREFIX = "泥作/";
+
+    let pinBuf = "", isLocked = true, userRole = "";
+    let currentCategory = "結構", selectedWorkTypes = [], workerCounts = {};
+    let selectedMudSubs = []; // 泥作子項目複選
+    let logs = [], filterProject = "";
+    let editingIndex = -1;
+    let deleteMode = "", longPressTimer = null, pendingDeleteProject = "";
+
+    const $ = id => document.getElementById(id);
+    const domPreviewCard = $("previewCard");
+    const domToast = $("toast"), domToastIcon = $("toastIcon"), domToastMsg = $("toastMsg");
+
+    // ── 工具函式 ──
+    function escapeHtml(s) {
+        return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#039;");
+    }
+    function escapeAttr(s) { return String(s).replace(/\\/g,"\\\\").replace(/'/g,"\\'"); }
+    function formatDate(dateStr) {
+        if (!dateStr) return "";
+        const s = String(dateStr);
+        // 直接抓 YYYY-MM-DD 或 YYYY/MM/DD
+        const m1 = s.match(/(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/);
+        if (m1) return `${m1[1]}-${parseInt(m1[2])}/${parseInt(m1[3])}`;
+        // 處理其他日期格式
+        const d = new Date(s);
+        if (isNaN(d.getTime())) return s;
+        return `${d.getFullYear()}-${d.getMonth()+1}/${d.getDate()}`;
+    }
+
+    function weatherEmoji(w) {
+        return {"晴天":"☀️","多雲":"⛅","陰天":"☁️","小雨":"🌦️","豪雨":"🌧️","雷陣雨":"⛈️","颱風":"🌀"}[w]||"🌡️";
+    }
+    function showToast(msg, icon="ti-circle-check") {
+        domToastIcon.className = "ti " + icon;
+        domToastMsg.textContent = msg;
+        domToast.classList.add("show");
+        if (window._tt) clearTimeout(window._tt);
+        window._tt = setTimeout(() => domToast.classList.remove("show"), 2500);
+    }
+    function showLoading(text) { $("loadingText").textContent = text || "同步中..."; $("loading").style.display = "flex"; }
+    function hideLoading() { $("loading").style.display = "none"; }
+    function simpleHash(s) {
+        let h = 0;
+        for (let i = 0; i < s.length; i++) { h = ((h << 5) - h) + s.charCodeAt(i); h |= 0; }
+        return (h >>> 0).toString(16).slice(0,8);
+    }
+
+    // ── 密碼鍵盤 ──
+    function pinPress(n) {
+        if (pinBuf.length >= 6) return;
+        pinBuf += String(n);
+        updatePinDisplay();
+        if (pinBuf.length === 6) setTimeout(checkPin, 80);
+    }
+    function pinBackspace() {
+        if (!pinBuf.length) return;
+        pinBuf = pinBuf.slice(0,-1);
+        updatePinDisplay();
+        $("pinError").textContent = "";
+    }
+    function updatePinDisplay() {
+        for (let i = 0; i < 6; i++) $("b"+i).classList.toggle("filled", i < pinBuf.length);
+    }
+    function checkPin() {
+        const h = simpleHash(pinBuf);
+        if (h === HASH_WORKER) {
+            userRole = "worker";
+            $("roleTag").textContent = "👷 師傅模式";
+            $("roleTag").style.color = "#2cc3a6";
+            proceedLogin();
+        } else if (h === HASH_ADMIN) {
+            userRole = "admin";
+            $("roleTag").textContent = "🔑 主管模式";
+            $("roleTag").style.color = "#e8870a";
+            proceedLogin();
+        } else {
+            $("pinError").textContent = "密碼錯誤，請再試一次";
+            pinBuf = ""; updatePinDisplay();
+        }
+    }
+    function proceedLogin() {
+        isLocked = false;
+        $("lockScreen").style.display = "none";
+        $("mainApp").style.display = "block";
+        if (userRole === "admin") $("btnExport").style.display = "inline-flex";
+        initDate();
+        updateWorkTypeOptions();
+        loadLogs();
+    }
+    window.addEventListener("keydown", e => {
+        if (!isLocked) return;
+        if (e.key >= "0" && e.key <= "9") pinPress(parseInt(e.key));
+        else if (e.key === "Backspace") pinBackspace();
+    });
+
+    // ── 日期 ──
+    function initDate() {
+        const t = new Date();
+        $("logDate").value = `${t.getFullYear()}-${String(t.getMonth()+1).padStart(2,"0")}-${String(t.getDate()).padStart(2,"0")}`;
+    }
+
+    // ── 類別與出工項目 ──
+    function selectCategory(cat) {
+        currentCategory = cat;
+        document.querySelectorAll(".cat-btn").forEach(b => b.classList.toggle("active", b.dataset.cat === cat));
+        selectedWorkTypes = []; workerCounts = {};
+        updateWorkTypeOptions(); livePreview();
+    }
+    function updateWorkTypeOptions(selectedVals, counts) {
+        const opts = WORK_TYPES[currentCategory] || [];
+        selectedWorkTypes = Array.isArray(selectedVals) ? selectedVals.filter(v => v !== "") : selectedWorkTypes;
+        if (counts) workerCounts = counts;
+
+        // 還原泥作子項目（從 selectedWorkTypes 裡找 "泥作/xxx" 格式）
+        selectedMudSubs = selectedWorkTypes
+            .filter(v => v.startsWith(MUDWORK_PREFIX))
+            .map(v => v.slice(MUDWORK_PREFIX.length));
+        // 讓 worktype toggle 顯示時，把泥作子項目從 selectedWorkTypes 排除（統一用「泥作」主按鈕代表）
+        const mainSelected = selectedWorkTypes.some(v => v === "泥作" || v.startsWith(MUDWORK_PREFIX));
+
+        const el = $("workTypeToggle");
+        if (!el) return;
+        el.innerHTML = opts.map(o => {
+            const s = escapeHtml(o);
+            const isActive = o === "泥作"
+                ? mainSelected
+                : selectedWorkTypes.includes(o);
+            return `<button type="button" class="wt-btn${isActive?" active":""}" onclick="toggleWorkType('${s}')">${s}</button>`;
+        }).join("");
+
+        renderMudSubCard();
+        renderWorkerCountArea();
+    }
+
+    function toggleWorkType(val) {
+        if (val === "泥作") {
+            const hasMud = selectedWorkTypes.some(v => v === "泥作" || v.startsWith(MUDWORK_PREFIX));
+            if (hasMud) {
+                // 取消泥作：移除所有泥作相關
+                selectedWorkTypes = selectedWorkTypes.filter(v => v !== "泥作" && !v.startsWith(MUDWORK_PREFIX));
+                selectedMudSubs = [];
+                // 清除泥作人數
+                Object.keys(workerCounts).forEach(k => { if (k.startsWith(MUDWORK_PREFIX) || k === "泥作") delete workerCounts[k]; });
+            } else {
+                selectedWorkTypes.push("泥作"); // 暫存主項，展開子選項
+                selectedMudSubs = [];
+            }
+        } else {
+            const idx = selectedWorkTypes.indexOf(val);
+            if (idx >= 0) { selectedWorkTypes.splice(idx,1); delete workerCounts[val]; }
+            else selectedWorkTypes.push(val);
+        }
+        document.querySelectorAll(".wt-btn").forEach(b => {
+            if (b.textContent === "泥作") {
+                b.classList.toggle("active", selectedWorkTypes.some(v => v === "泥作" || v.startsWith(MUDWORK_PREFIX)));
+            } else {
+                b.classList.toggle("active", selectedWorkTypes.includes(b.textContent));
+            }
+        });
+        renderMudSubCard();
+        renderWorkerCountArea();
+        livePreview();
+    }
+
+    function toggleMudSub(sub) {
+        const idx = selectedMudSubs.indexOf(sub);
+        if (idx >= 0) {
+            selectedMudSubs.splice(idx,1);
+            delete workerCounts[MUDWORK_PREFIX + sub];
+            // 移除對應的 selectedWorkTypes 項
+            const wi = selectedWorkTypes.indexOf(MUDWORK_PREFIX + sub);
+            if (wi >= 0) selectedWorkTypes.splice(wi, 1);
+        } else {
+            selectedMudSubs.push(sub);
+            selectedWorkTypes.push(MUDWORK_PREFIX + sub);
+            // 移除主「泥作」佔位符（改用子項目代替）
+            const mi = selectedWorkTypes.indexOf("泥作");
+            if (mi >= 0) selectedWorkTypes.splice(mi, 1);
+        }
+        document.querySelectorAll(".mud-sub-btn").forEach(b =>
+            b.classList.toggle("active", selectedMudSubs.includes(b.dataset.sub)));
+        renderWorkerCountArea();
+        livePreview();
+    }
+
+    function renderMudSubCard() {
+        const container = $("workTypeToggle");
+        if (!container) return;
+        // 移除舊的子選項卡片
+        const old = container.parentNode.querySelector(".mud-sub-card");
+        if (old) old.remove();
+
+        const hasMud = selectedWorkTypes.some(v => v === "泥作" || v.startsWith(MUDWORK_PREFIX));
+        if (!hasMud || currentCategory !== "裝修") return;
+
+        const card = document.createElement("div");
+        card.className = "mud-sub-card";
+        card.innerHTML = `
+            <div class="mud-sub-label">🧱 泥作細項（可複選）</div>
+            <div class="mud-sub-toggle">
+                ${MUDWORK_SUBS.map(sub => `
+                    <button type="button" class="mud-sub-btn${selectedMudSubs.includes(sub)?" active":""}"
+                        data-sub="${escapeHtml(sub)}"
+                        onclick="toggleMudSub('${escapeHtml(sub)}')">${escapeHtml(sub)}</button>
+                `).join("")}
+            </div>`;
+        container.insertAdjacentElement("afterend", card);
+    }
+    function renderWorkerCountArea() {
+        const el = $("workerCountArea");
+        if (!el) return;
+        // 顯示項目：排除泥作主佔位符，泥作子項目以 "泥作/xxx" 顯示
+        const displayTypes = selectedWorkTypes.filter(v => v !== "泥作");
+        if (!displayTypes.length) { el.innerHTML=""; return; }
+        el.innerHTML = `<div class="worker-count-area">` +
+            displayTypes.map(w => {
+                const displayLabel = w.startsWith(MUDWORK_PREFIX)
+                    ? `泥作 / ${w.slice(MUDWORK_PREFIX.length)}`
+                    : w;
+                const s = escapeHtml(w);
+                return `<div class="worker-count-row">
+                    <span class="wc-label">${escapeHtml(displayLabel)}</span>
+                    <input type="number" min="1" step="1" placeholder="人數"
+                        value="${escapeHtml(workerCounts[w]||"")}"
+                        oninput="this.value=this.value.replace(/\D/g,''); workerCounts['${s}']=this.value; livePreview();">
+                    <span class="wc-unit">人</span>
+                </div>`;
+            }).join("") + `</div>`;
+    }
+
+    // ── 雲端同步 ──
+    async function loadLogs() {
+        showLoading("讀取雲端日誌中...");
+        try {
+            const res = await fetch(`${GAS_URL}?_ts=${Date.now()}`, { method: "GET" });
+            const data = await res.json();
+            if (data.status === "success") {
+                logs = data.logs || [];
+                localStorage.setItem("engineering_logs", JSON.stringify(logs));
+                showToast("資料已更新");
+            } else { throw new Error(data.message); }
+        } catch(err) {
+            try { logs = JSON.parse(localStorage.getItem("engineering_logs")) || []; }
+            catch(e) { logs = []; }
+            showToast("使用本地備份資料", "ti-alert-circle");
+        } finally {
+            hideLoading();
+        }
+        renderStats(); renderTagFilter(); renderProjectHistory(); renderLogs();
+    }
+
+    async function syncToCloud(payload, successMsg) {
+        showLoading("上傳至雲端...");
+        try {
+            const res = await fetch(GAS_URL, {
+                method: "POST",
+                headers: { "Content-Type": "text/plain;charset=UTF-8" },
+                body: JSON.stringify(payload)
+            });
+            const result = await res.json();
+            if (result.status === "success") {
+                showToast(successMsg || "同步成功");
+                await loadLogs();
+            } else {
+                showToast("儲存失敗：" + result.message, "ti-alert-circle");
+            }
+        } catch(err) {
+            showToast("上傳失敗，請確認網路", "ti-alert-circle");
+        } finally {
+            hideLoading();
+        }
+    }
+
+    // ── 工項標籤產生（泥作合併顯示）──
+    function buildWorkItems(types, counts) {
+        if (!types || !types.filter(v => v !== "泥作").length) return "";
+        const mudSubs = types.filter(v => v.startsWith(MUDWORK_PREFIX));
+        const others = types.filter(v => v !== "泥作" && !v.startsWith(MUDWORK_PREFIX));
+        let html = "";
+        // 泥作合併標籤
+        if (mudSubs.length) {
+            const mudParts = mudSubs.map(v => {
+                const sub = v.slice(MUDWORK_PREFIX.length);
+                const cnt = counts[v];
+                return `${sub}${cnt ? ` x${cnt}` : ""}`;
+            }).join("、");
+            html += `<span class="p-work-item">泥作/${mudParts}</span>`;
+        }
+        // 其他工種
+        others.forEach(w => {
+            const cnt = counts[w];
+            html += `<span class="p-work-item">${escapeHtml(w)}${cnt ? ` x${cnt}` : ""}</span>`;
+        });
+        return html ? `<div class="p-work-items">${html}</div>` : "";
+    }
+
+    // ── 即時預覽 ──
+    function livePreview() {
+        const date = $("logDate").value;
+        const project = $("projectName").value.trim();
+        const weather = $("weather").value;
+        const content = $("content").value.trim();
+        if (!date && !project) { hidePreview(); return; }
+        const d = new Date(date);
+        const label = date ? `${d.getFullYear()}/${String(d.getMonth()+1).padStart(2,"0")}/${String(d.getDate()).padStart(2,"0")}` : "—";
+        const workItems = buildWorkItems(selectedWorkTypes, workerCounts);
+        domPreviewCard.innerHTML = `
+            <div class="p-date">📅 ${label}</div>
+            <div class="p-project">${escapeHtml(project||"—")}</div>
+            <div class="p-badges">
+                <span class="p-badge">${weatherEmoji(weather)} ${weather}</span>
+                <span class="p-badge">🏗️ ${currentCategory}</span>
+            </div>${workItems}${content ? `<div class="p-content">${escapeHtml(content)}</div>` : ""}`;
+    }
+    function hidePreview() {
+        domPreviewCard.innerHTML = `<span class="preview-placeholder">填寫上方資料後，預覽將即時顯示於此。</span>`;
+    }
+
+    // ── 儲存 ──
+    function saveLog() {
+        const date = $("logDate").value;
+        const project = $("projectName").value.trim();
+        const weather = $("weather").value;
+        const content = $("content").value.trim();
+        if (!date || !project) { showToast("請填寫日期與專案名稱", "ti-alert-circle"); return; }
+        const d = new Date(date);
+        const label = `${d.getFullYear()}/${String(d.getMonth()+1).padStart(2,"0")}/${String(d.getDate()).padStart(2,"0")}`;
+        const id = editingIndex >= 0 ? (logs[editingIndex]?.id || "ID_"+Date.now()) : "ID_"+Date.now()+"_"+Math.floor(Math.random()*1000);
+        const payload = {
+            action: editingIndex >= 0 ? "update" : "insert",
+            id, date, project, weather,
+            workCategory: currentCategory,
+            workType: selectedWorkTypes.join("、"),
+            workerCount: JSON.stringify(workerCounts),
+            content
+        };
+        const msg = editingIndex >= 0 ? "日誌已更新並上傳 ☁️" : "日誌已儲存並上傳 ☁️";
+        if (editingIndex >= 0) cancelEdit();
+        else clearForm();
+        syncToCloud(payload, msg);
+    }
+
+    function clearForm() {
+        $("projectName").value = ""; $("content").value = "";
+        selectedWorkTypes = []; workerCounts = {}; selectedMudSubs = [];
+        initDate();
+        // 移除泥作子選項卡片
+        const mud = document.querySelector(".mud-sub-card");
+        if (mud) mud.remove();
+        updateWorkTypeOptions([], {});
+        hidePreview();
+    }
+
+    // ── 編輯 ──
+    function editLog(i) {
+        const l = logs[i];
+        if (userRole !== "admin") {
+            const today = new Date();
+            const ymd = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,"0")}-${String(today.getDate()).padStart(2,"0")}`;
+            if ((l.ts||"") !== ymd) { showToast("師傅只能修改當天的日誌", "ti-alert-circle"); return; }
+        }
+        editingIndex = i;
+        $("logDate").value = l.ts || "";
+        $("projectName").value = l.project;
+        $("weather").value = l.weather;
+        $("content").value = l.content || "";
+        const cat = l.workCategory || "結構";
+        currentCategory = cat;
+        document.querySelectorAll(".cat-btn").forEach(b => b.classList.toggle("active", b.dataset.cat === cat));
+        const vals = l.workType ? l.workType.split("、") : [];
+        let counts = {};
+        try { counts = l.workerCount ? JSON.parse(l.workerCount) : {}; } catch(e) {}
+        updateWorkTypeOptions(vals, counts);
+        livePreview();
+        $("formLabel").textContent = "✏️ 修改日誌";
+        $("cancelEditBtn").style.display = "inline-flex";
+        $("formCard").classList.add("editing");
+        $("formCard").scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+    function cancelEdit() {
+        editingIndex = -1;
+        clearForm();
+        $("formLabel").textContent = "新增日誌";
+        $("cancelEditBtn").style.display = "none";
+        $("formCard").classList.remove("editing");
+        hidePreview();
+    }
+
+    // ── 刪除單筆 ──
+    async function deleteLog(i) {
+        if (userRole !== "admin") { showToast("只有主管可以刪除", "ti-alert-circle"); return; }
+        if (!confirm("確定刪除這筆日誌？")) return;
+        const log = logs[i];
+        await syncToCloud({ action: "delete", id: log.id, project: log.project }, "已刪除並同步雲端");
+    }
+
+    // ── 統計 ──
+    function renderStats() {
+        const now = new Date();
+        const ym = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`;
+        $("statTotal").textContent = logs.length;
+        $("statMonth").textContent = logs.filter(l => l.ts && l.ts.startsWith(ym)).length;
+        $("statProjects").textContent = new Set(logs.map(l => l.project)).size;
+    }
+
+    // ── 專案歷史 ──
+    function renderProjectHistory() {
+        $("projectHistory").innerHTML = [...new Set(logs.map(l => l.project))].map(p => `<option value="${escapeHtml(p)}">`).join("");
+    }
+
+    // ── 篩選標籤 ──
+    function renderTagFilter() {
+        const projects = [...new Set(logs.map(l => l.project))].slice(0, 8);
+        const el = $("tagFilter");
+        if (!projects.length) { el.innerHTML=""; return; }
+        const allBtn = `<span class="tag${!filterProject?" active":""}" onclick="setFilter('')">全部</span>`;
+        const btns = projects.map(p => {
+            const sd = escapeHtml(p), sa = escapeAttr(p);
+            const isDel = deleteMode === p;
+            const delBtn = isDel ? `<button class="tag-del-btn" onclick="event.stopPropagation();showDeleteProjectModal('${sa}')">✕</button>` : "";
+            return `<span class="tag${filterProject===p?" active":""} ${isDel?"tag-delete-mode":""}"
+                onclick="setFilter('${sa}')"
+                onmousedown="startLongPress('${sa}')" onmouseup="cancelLongPress()" onmouseleave="cancelLongPress()"
+                ontouchstart="startLongPress('${sa}')" ontouchend="cancelLongPress()"
+                style="overflow:visible">${sd}${delBtn}</span>`;
+        }).join("");
+        el.innerHTML = allBtn + btns;
+    }
+    function setFilter(p) { filterProject = p; deleteMode = ""; renderTagFilter(); renderLogs(); }
+    function startLongPress(p) {
+        longPressTimer = setTimeout(() => { deleteMode = deleteMode===p?"":p; renderTagFilter(); }, 600);
+    }
+    function cancelLongPress() { clearTimeout(longPressTimer); }
+
+    // ── 刪除整個專案 ──
+    function showDeleteProjectModal(project) {
+        if (userRole !== "admin") { showToast("只有主管可以刪除專案", "ti-alert-circle"); return; }
+        pendingDeleteProject = project;
+        $("modalProjectName").textContent = `「${project}」`;
+        $("deleteModal").style.display = "flex";
+    }
+    async function confirmDeleteProject() {
+        if (!pendingDeleteProject) return;
+        $("deleteModal").style.display = "none";
+        const projectLogs = logs.filter(l => l.project === pendingDeleteProject);
+        showLoading("刪除專案中...");
+        for (const log of projectLogs) {
+            await fetch(GAS_URL, {
+                method: "POST",
+                headers: { "Content-Type": "text/plain;charset=UTF-8" },
+                body: JSON.stringify({ action: "delete", id: log.id, project: log.project })
+            });
+        }
+        if (filterProject === pendingDeleteProject) filterProject = "";
+        deleteMode = ""; pendingDeleteProject = "";
+        hideLoading();
+        showToast("專案已全部刪除", "ti-trash");
+        await loadLogs();
+    }
+    function closeDeleteModal() {
+        $("deleteModal").style.display = "none";
+        deleteMode = ""; pendingDeleteProject = "";
+        renderTagFilter();
+    }
+
+    // ── 日誌列表 ──
+    function renderLogs() {
+        const q = $("searchInput").value.toLowerCase();
+        const el = $("logList");
+        const today = new Date();
+        const todayStr = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,"0")}-${String(today.getDate()).padStart(2,"0")}`;
+
+        const filtered = logs
+            .map((l,i) => ({...l, _idx:i}))
+            .filter(l => {
+                const mQ = !q || l.project.toLowerCase().includes(q) || (l.content||"").toLowerCase().includes(q);
+                const mP = !filterProject || l.project === filterProject;
+                return mQ && mP;
+            })
+            .sort((a, b) => new Date(b.date || b.ts || 0).getTime() - new Date(a.date || a.ts || 0).getTime());
+
+        if (!filtered.length) {
+            el.innerHTML = `<div class="empty-state"><i class="ti ti-clipboard-off"></i><p>${logs.length?"沒有符合條件的日誌":"尚無任何日誌，儲存第一筆紀錄吧！"}</p></div>`;
+            return;
+        }
+
+        el.innerHTML = filtered.map(l => {
+            const ri = l._idx;
+            let counts = {};
+            try {
+                if (l.workerCount && l.workerCount.startsWith("{")) {
+                    counts = JSON.parse(l.workerCount);
+                } else if (l.workerCount) {
+                    l.workerCount.split("、").forEach(function(token) {
+                        const pts = token.split(":");
+                        if (pts.length === 2) counts[pts[0]] = pts[1].replace("人","");
+                    });
+                }
+            } catch(e) {}
+            const types = l.workType ? l.workType.split("、").filter(w=>w!=="") : [];
+            const catLabel = l.workCategory ? `<span class="badge-work-cat">${escapeHtml(l.workCategory)}</span>` : "";
+
+            // 泥作合併，其他工種個別顯示
+            const mudSubs = types.filter(v => v.startsWith(MUDWORK_PREFIX));
+            const others = types.filter(v => v !== "泥作" && !v.startsWith(MUDWORK_PREFIX));
+            let badgeHtml = "";
+            if (mudSubs.length) {
+                const mudParts = mudSubs.map(v => {
+                    const sub = v.slice(MUDWORK_PREFIX.length);
+                    const cnt = counts[v];
+                    return `${escapeHtml(sub)}${cnt ? ` <span style="color:#e8870a;font-weight:600">x${escapeHtml(cnt)}</span>` : ""}`;
+                }).join("、");
+                badgeHtml += `<span class="badge-work"><i class="ti ti-hammer" style="font-size:11px;vertical-align:-1px"></i> 泥作/${mudParts}</span>`;
+            }
+            others.forEach(w => {
+                const cnt = counts[w];
+                badgeHtml += `<span class="badge-work"><i class="ti ti-hammer" style="font-size:11px;vertical-align:-1px"></i> ${escapeHtml(w)}${cnt ? ` <span style="color:#e8870a;font-weight:600">x${escapeHtml(cnt)}</span>` : ""}</span>`;
+            });
+            const workInfo = (mudSubs.length || others.length) ? `<div class="log-work-info">${catLabel}${badgeHtml}</div>` : "";
+            const canEdit = userRole==="admin" || (l.ts||"")=== todayStr;
+            return `<div class="log-item">
+                <div class="log-item-head">
+                    <div class="log-item-meta">
+                        <span class="log-date"><i class="ti ti-calendar"></i>${escapeHtml(formatDate(l.date||l.ts||""))}</span>
+                        <span class="badge-weather">${weatherEmoji(l.weather)} ${escapeHtml(l.weather||"")}</span>
+                    </div>
+                    <div class="log-item-actions">
+                        ${canEdit?`<button class="btn-edit" onclick="editLog(${ri})"><i class="ti ti-pencil"></i> 修改</button>`:""}
+                        ${userRole==="admin"?`<button class="btn-danger" onclick="deleteLog(${ri})"><i class="ti ti-trash"></i> 刪除</button>`:""}
+                    </div>
+                </div>
+                <div class="log-project">${escapeHtml(l.project||"")}</div>
+                ${workInfo}
+                ${l.content?`<div class="log-content">${escapeHtml(l.content)}</div>`:""}
+            </div>`;
+        }).join("");
+    }
+
+    // ── 匯出 CSV ──
+    function exportCSV() {
+        if (userRole !== "admin") { showToast("只有主管可以匯出", "ti-alert-circle"); return; }
+        if (!filterProject) { showToast("請先點選標籤選取專案", "ti-alert-circle"); return; }
+        const target = logs.filter(l => l.project === filterProject);
+        if (!target.length) { showToast("此專案尚無資料", "ti-alert-circle"); return; }
+        const rows = [
+            ["日期","專案名稱","天氣","工程類別","出工項目","出工人數","備註"],
+            ...target.map(l => {
+                let counts = {};
+                try { if (l.workerCount && l.workerCount.startsWith("{")) counts = JSON.parse(l.workerCount); } catch(e){}
+                const types = l.workType ? l.workType.split("、").filter(w=>w!=="") : [];
+                const countStr = types.map(w => counts[w]?`${w}:${counts[w]}人`:w).join("、");
+                return [l.date, l.project, l.weather, l.workCategory||"", l.workType||"", countStr, (l.content||"").replace(/\n/g," ")];
+            })
+        ];
+        const csv = rows.map(r => r.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(",")).join("\n");
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(new Blob(["\uFEFF"+csv], {type:"text/csv;charset=utf-8"}));
+        a.download = `工程日誌_${filterProject}_${new Date().toISOString().slice(0,10)}.csv`;
+        a.click();
+        showToast(`「${filterProject}」已匯出`);
+    }
+
+    // ── 防誤觸關閉 ──
+    window.addEventListener("beforeunload", e => {
+        if (isLocked) return;
+        const p = $("projectName")?.value.trim()||"";
+        const c = $("content")?.value.trim()||"";
+        if (p || c || selectedWorkTypes.length > 0) {
+            e.preventDefault();
+            e.returnValue = "資料尚未儲存，確定要離開嗎？";
+        }
+    });
+</script>
+</body>
+</html>
