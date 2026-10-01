@@ -325,7 +325,7 @@
     let currentCategory = "結構", selectedWorkTypes = [], workerCounts = {};
     let selectedMudSubs = []; // 泥作子項目複選
     let logs = [], filterProject = "";
-    let editingIndex = -1;
+    let editingId = null; // 修改中的日誌 id（用 id 而非陣列索引，避免資料重新載入後改到別筆）
     let deleteMode = "", longPressTimer = null, pendingDeleteProject = "";
 
     const $ = id => document.getElementById(id);
@@ -539,19 +539,18 @@
                 const displayLabel = w.startsWith(MUDWORK_PREFIX)
                     ? `泥作 / ${w.slice(MUDWORK_PREFIX.length)}`
                     : w;
-                const s = escapeHtml(w);
                 return `<div class="worker-count-row">
                     <span class="wc-label">${escapeHtml(displayLabel)}</span>
                     <input type="number" min="1" step="1" placeholder="人數"
                         value="${escapeHtml(workerCounts[w]||"")}"
-                        oninput="this.value=this.value.replace(/\D/g,''); workerCounts['${s}']=this.value; livePreview();">
+                        oninput="this.value=this.value.replace(/\D/g,''); workerCounts['${escapeHtml(escapeAttr(w))}']=this.value; livePreview();">
                     <span class="wc-unit">人</span>
                 </div>`;
             }).join("") + `</div>`;
     }
 
     // ── 雲端同步 ──
-    async function loadLogs() {
+    async function loadLogs(silent = false) {
         showLoading("讀取雲端日誌中...");
         try {
             const res = await fetch(`${GAS_URL}?_ts=${Date.now()}`, { method: "GET" });
@@ -559,7 +558,7 @@
             if (data.status === "success") {
                 logs = data.logs || [];
                 localStorage.setItem("engineering_logs", JSON.stringify(logs));
-                showToast("資料已更新");
+                if (!silent) showToast("資料已更新");
             } else { throw new Error(data.message); }
         } catch(err) {
             try { logs = JSON.parse(localStorage.getItem("engineering_logs")) || []; }
@@ -571,8 +570,10 @@
         renderStats(); renderTagFilter(); renderProjectHistory(); renderLogs();
     }
 
+    // 回傳 true 表示雲端已成功寫入
     async function syncToCloud(payload, successMsg) {
         showLoading("上傳至雲端...");
+        let ok = false;
         try {
             const res = await fetch(GAS_URL, {
                 method: "POST",
@@ -581,16 +582,33 @@
             });
             const result = await res.json();
             if (result.status === "success") {
+                ok = true;
+                await loadLogs(true);
                 showToast(successMsg || "同步成功");
-                await loadLogs();
             } else {
-                showToast("儲存失敗：" + result.message, "ti-alert-circle");
+                showToast("操作失敗：" + result.message, "ti-alert-circle");
             }
         } catch(err) {
             showToast("上傳失敗，請確認網路", "ti-alert-circle");
         } finally {
             hideLoading();
         }
+        return ok;
+    }
+
+    // ── 出工人數解析（相容 JSON 與 GAS 儲存的「鋼筋:3人、水電:2人」格式）──
+    function parseWorkerCount(raw) {
+        const counts = {};
+        const s = String(raw || "").trim();
+        if (!s) return counts;
+        if (s.startsWith("{")) {
+            try { return JSON.parse(s) || counts; } catch(e) { return counts; }
+        }
+        s.split("、").forEach(token => {
+            const pts = token.split(":");
+            if (pts.length === 2) counts[pts[0]] = pts[1].replace("人","");
+        });
+        return counts;
     }
 
     // ── 工項標籤產生（泥作合併顯示）──
@@ -639,27 +657,27 @@
     }
 
     // ── 儲存 ──
-    function saveLog() {
+    async function saveLog() {
         const date = $("logDate").value;
         const project = $("projectName").value.trim();
         const weather = $("weather").value;
         const content = $("content").value.trim();
         if (!date || !project) { showToast("請填寫日期與專案名稱", "ti-alert-circle"); return; }
-        const d = new Date(date);
-        const label = `${d.getFullYear()}/${String(d.getMonth()+1).padStart(2,"0")}/${String(d.getDate()).padStart(2,"0")}`;
-        const id = editingIndex >= 0 ? (logs[editingIndex]?.id || "ID_"+Date.now()) : "ID_"+Date.now()+"_"+Math.floor(Math.random()*1000);
+        const isEdit = editingId !== null;
+        const id = isEdit ? editingId : "ID_"+Date.now()+"_"+Math.floor(Math.random()*1000);
         const payload = {
-            action: editingIndex >= 0 ? "update" : "insert",
+            action: isEdit ? "update" : "insert",
             id, date, project, weather,
             workCategory: currentCategory,
             workType: selectedWorkTypes.join("、"),
             workerCount: JSON.stringify(workerCounts),
             content
         };
-        const msg = editingIndex >= 0 ? "日誌已更新並上傳 ☁️" : "日誌已儲存並上傳 ☁️";
-        if (editingIndex >= 0) cancelEdit();
+        const msg = isEdit ? "日誌已更新並上傳 ☁️" : "日誌已儲存並上傳 ☁️";
+        // 上傳成功才清空表單；失敗時保留內容讓使用者重試
+        if (!await syncToCloud(payload, msg)) return;
+        if (isEdit) cancelEdit();
         else clearForm();
-        syncToCloud(payload, msg);
     }
 
     function clearForm() {
@@ -681,7 +699,7 @@
             const ymd = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,"0")}-${String(today.getDate()).padStart(2,"0")}`;
             if ((l.ts||"") !== ymd) { showToast("師傅只能修改當天的日誌", "ti-alert-circle"); return; }
         }
-        editingIndex = i;
+        editingId = l.id;
         $("logDate").value = l.ts || "";
         $("projectName").value = l.project;
         $("weather").value = l.weather;
@@ -690,9 +708,7 @@
         currentCategory = cat;
         document.querySelectorAll(".cat-btn").forEach(b => b.classList.toggle("active", b.dataset.cat === cat));
         const vals = l.workType ? l.workType.split("、") : [];
-        let counts = {};
-        try { counts = l.workerCount ? JSON.parse(l.workerCount) : {}; } catch(e) {}
-        updateWorkTypeOptions(vals, counts);
+        updateWorkTypeOptions(vals, parseWorkerCount(l.workerCount));
         livePreview();
         $("formLabel").textContent = "✏️ 修改日誌";
         $("cancelEditBtn").style.display = "inline-flex";
@@ -700,7 +716,7 @@
         $("formCard").scrollIntoView({ behavior: "smooth", block: "start" });
     }
     function cancelEdit() {
-        editingIndex = -1;
+        editingId = null;
         clearForm();
         $("formLabel").textContent = "新增日誌";
         $("cancelEditBtn").style.display = "none";
@@ -737,7 +753,8 @@
         if (!projects.length) { el.innerHTML=""; return; }
         const allBtn = `<span class="tag${!filterProject?" active":""}" onclick="setFilter('')">全部</span>`;
         const btns = projects.map(p => {
-            const sd = escapeHtml(p), sa = escapeAttr(p);
+            // sa 會放進雙引號包住的 onclick 屬性：先跳脫 JS 字串，再跳脫 HTML
+            const sd = escapeHtml(p), sa = escapeHtml(escapeAttr(p));
             const isDel = deleteMode === p;
             const delBtn = isDel ? `<button class="tag-del-btn" onclick="event.stopPropagation();showDeleteProjectModal('${sa}')">✕</button>` : "";
             return `<span class="tag${filterProject===p?" active":""} ${isDel?"tag-delete-mode":""}"
@@ -764,20 +781,26 @@
     async function confirmDeleteProject() {
         if (!pendingDeleteProject) return;
         $("deleteModal").style.display = "none";
-        const projectLogs = logs.filter(l => l.project === pendingDeleteProject);
+        const project = pendingDeleteProject;
+        const projectLogs = logs.filter(l => l.project === project);
+        let failed = 0;
         showLoading("刪除專案中...");
         for (const log of projectLogs) {
-            await fetch(GAS_URL, {
-                method: "POST",
-                headers: { "Content-Type": "text/plain;charset=UTF-8" },
-                body: JSON.stringify({ action: "delete", id: log.id, project: log.project })
-            });
+            try {
+                const res = await fetch(GAS_URL, {
+                    method: "POST",
+                    headers: { "Content-Type": "text/plain;charset=UTF-8" },
+                    body: JSON.stringify({ action: "delete", id: log.id, project: log.project })
+                });
+                const result = await res.json();
+                if (result.status !== "success") failed++;
+            } catch(e) { failed++; }
         }
-        if (filterProject === pendingDeleteProject) filterProject = "";
+        if (filterProject === project && !failed) filterProject = "";
         deleteMode = ""; pendingDeleteProject = "";
-        hideLoading();
-        showToast("專案已全部刪除", "ti-trash");
-        await loadLogs();
+        await loadLogs(true);
+        if (failed) showToast(`有 ${failed} 筆刪除失敗，請再試一次`, "ti-alert-circle");
+        else showToast("專案已全部刪除", "ti-trash");
     }
     function closeDeleteModal() {
         $("deleteModal").style.display = "none";
@@ -808,17 +831,7 @@
 
         el.innerHTML = filtered.map(l => {
             const ri = l._idx;
-            let counts = {};
-            try {
-                if (l.workerCount && l.workerCount.startsWith("{")) {
-                    counts = JSON.parse(l.workerCount);
-                } else if (l.workerCount) {
-                    l.workerCount.split("、").forEach(function(token) {
-                        const pts = token.split(":");
-                        if (pts.length === 2) counts[pts[0]] = pts[1].replace("人","");
-                    });
-                }
-            } catch(e) {}
+            const counts = parseWorkerCount(l.workerCount);
             const types = l.workType ? l.workType.split("、").filter(w=>w!=="") : [];
             const catLabel = l.workCategory ? `<span class="badge-work-cat">${escapeHtml(l.workCategory)}</span>` : "";
 
@@ -867,8 +880,7 @@
         const rows = [
             ["日期","專案名稱","天氣","工程類別","出工項目","出工人數","備註"],
             ...target.map(l => {
-                let counts = {};
-                try { if (l.workerCount && l.workerCount.startsWith("{")) counts = JSON.parse(l.workerCount); } catch(e){}
+                const counts = parseWorkerCount(l.workerCount);
                 const types = l.workType ? l.workType.split("、").filter(w=>w!=="") : [];
                 const countStr = types.map(w => counts[w]?`${w}:${counts[w]}人`:w).join("、");
                 return [l.date, l.project, l.weather, l.workCategory||"", l.workType||"", countStr, (l.content||"").replace(/\n/g," ")];
