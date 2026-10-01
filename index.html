@@ -279,7 +279,7 @@
         <div class="toolbar">
             <div class="search-wrap">
                 <i class="ti ti-search"></i>
-                <input type="text" id="searchInput" placeholder="搜尋專案或施工內容..." oninput="renderLogs()">
+                <input type="text" id="searchInput" placeholder="搜尋專案或施工內容..." oninput="onSearchInput()">
             </div>
             <button class="btn-ghost" id="btnExport" onclick="exportCSV()" style="display:none">
                 <i class="ti ti-download"></i> 匯出
@@ -549,51 +549,88 @@
             }).join("") + `</div>`;
     }
 
-    // ── 雲端同步 ──
+    // ── API 層：所有雲端通訊只經過這裡 ──
+    // 回傳統一格式：成功 { success: true, data }；失敗 { success: false, error, network }
+    // Phase 3 改接 Cloudflare Worker 時，只需要修改這一段
+    const api = {
+        async getLogs() {
+            const r = await gasRequest("getLogs", "GET");
+            return r.success ? { success: true, data: r.body.logs || [] } : r;
+        },
+        async createLog(log) {
+            const r = await gasRequest("createLog", "POST", { action: "insert", ...log });
+            return r.success ? { success: true, data: r.body.log || null } : r;
+        },
+        async updateLog(id, log) {
+            const r = await gasRequest("updateLog", "POST", { action: "update", ...log, id });
+            return r.success ? { success: true, data: r.body.log || null } : r;
+        },
+        async deleteLog(id, project) {
+            const r = await gasRequest("deleteLog", "POST", { action: "delete", id, project });
+            return r.success ? { success: true, data: null } : r;
+        },
+        async deleteProject(project) {
+            const r = await gasRequest("deleteProject", "POST", { action: "deleteProject", project });
+            if (!r.success) return r;
+            // 舊版 GAS 不認得 deleteProject 會誤當成新增並回傳成功，必須確認 GAS 真的執行了專案刪除
+            if (r.body.action !== "deleteProject") return { success: false, error: "雲端程式版本過舊，請先更新 GAS", network: false };
+            return { success: true, data: { deleted: r.body.deleted || 0 } };
+        }
+    };
+
+    async function gasRequest(name, method, payload) {
+        const t0 = performance.now();
+        try {
+            const res = method === "GET"
+                ? await fetch(`${GAS_URL}?_ts=${Date.now()}`, { method: "GET" })
+                : await fetch(GAS_URL, {
+                    method: "POST",
+                    headers: { "Content-Type": "text/plain;charset=UTF-8" }, // 避免 CORS preflight
+                    body: JSON.stringify(payload)
+                });
+            const body = await res.json();
+            console.info(`[api] ${name} ${Math.round(performance.now() - t0)}ms ${body.status}`);
+            if (body.status === "success") return { success: true, body };
+            return { success: false, error: body.message || "未知錯誤", network: false };
+        } catch(err) {
+            console.info(`[api] ${name} ${Math.round(performance.now() - t0)}ms network error`);
+            return { success: false, error: "上傳失敗，請確認網路", network: true };
+        }
+    }
+
+    function showApiError(res) {
+        showToast(res.network ? res.error : "操作失敗：" + res.error, "ti-alert-circle");
+    }
+
+    // ── 本地資料與備份 ──
+    function saveLocalBackup() {
+        try { localStorage.setItem("engineering_logs", JSON.stringify(logs)); }
+        catch(e) { console.warn("本地備份失敗（可能超過容量）", e); }
+    }
+    function renderAll() {
+        renderStats(); renderTagFilter(); renderProjectHistory(); renderLogs();
+    }
+    // 寫入成功後只更新本地資料（不重新讀取全部），再備份並重繪
+    function commitLocalChange() {
+        if (editingId !== null && !logs.some(l => l.id === editingId)) cancelEdit(); // 修改中的日誌已被刪除
+        saveLocalBackup();
+        renderAll();
+    }
+
     async function loadLogs(silent = false) {
         showLoading("讀取雲端日誌中...");
-        try {
-            const res = await fetch(`${GAS_URL}?_ts=${Date.now()}`, { method: "GET" });
-            const data = await res.json();
-            if (data.status === "success") {
-                logs = data.logs || [];
-                localStorage.setItem("engineering_logs", JSON.stringify(logs));
-                if (!silent) showToast("資料已更新");
-            } else { throw new Error(data.message); }
-        } catch(err) {
+        const res = await api.getLogs();
+        hideLoading();
+        if (res.success) {
+            logs = res.data;
+            saveLocalBackup();
+            if (!silent) showToast("資料已更新");
+        } else {
             try { logs = JSON.parse(localStorage.getItem("engineering_logs")) || []; }
             catch(e) { logs = []; }
             showToast("使用本地備份資料", "ti-alert-circle");
-        } finally {
-            hideLoading();
         }
-        renderStats(); renderTagFilter(); renderProjectHistory(); renderLogs();
-    }
-
-    // 回傳 true 表示雲端已成功寫入
-    async function syncToCloud(payload, successMsg) {
-        showLoading("上傳至雲端...");
-        let ok = false;
-        try {
-            const res = await fetch(GAS_URL, {
-                method: "POST",
-                headers: { "Content-Type": "text/plain;charset=UTF-8" },
-                body: JSON.stringify(payload)
-            });
-            const result = await res.json();
-            if (result.status === "success") {
-                ok = true;
-                await loadLogs(true);
-                showToast(successMsg || "同步成功");
-            } else {
-                showToast("操作失敗：" + result.message, "ti-alert-circle");
-            }
-        } catch(err) {
-            showToast("上傳失敗，請確認網路", "ti-alert-circle");
-        } finally {
-            hideLoading();
-        }
-        return ok;
+        renderAll();
     }
 
     // ── 出工人數解析（相容 JSON 與 GAS 儲存的「鋼筋:3人、水電:2人」格式）──
@@ -665,17 +702,29 @@
         if (!date || !project) { showToast("請填寫日期與專案名稱", "ti-alert-circle"); return; }
         const isEdit = editingId !== null;
         const id = isEdit ? editingId : "ID_"+Date.now()+"_"+Math.floor(Math.random()*1000);
-        const payload = {
-            action: isEdit ? "update" : "insert",
+        const log = {
             id, date, project, weather,
             workCategory: currentCategory,
             workType: selectedWorkTypes.join("、"),
             workerCount: JSON.stringify(workerCounts),
             content
         };
-        const msg = isEdit ? "日誌已更新並上傳 ☁️" : "日誌已儲存並上傳 ☁️";
-        // 上傳成功才清空表單；失敗時保留內容讓使用者重試
-        if (!await syncToCloud(payload, msg)) return;
+        showLoading("上傳至雲端...");
+        const res = isEdit ? await api.updateLog(id, log) : await api.createLog(log);
+        hideLoading();
+        // 失敗：不動本地資料、不清空表單，讓使用者重試
+        if (!res.success) { showApiError(res); return; }
+        if (!res.data) {
+            await loadLogs(true); // 舊版 GAS 不回傳日誌時的相容做法
+        } else if (isEdit) {
+            const i = logs.findIndex(l => l.id === id);
+            if (i >= 0) logs[i] = res.data; else logs.unshift(res.data);
+            commitLocalChange();
+        } else {
+            logs.unshift(res.data);
+            commitLocalChange();
+        }
+        showToast(isEdit ? "日誌已更新並上傳 ☁️" : "日誌已儲存並上傳 ☁️");
         if (isEdit) cancelEdit();
         else clearForm();
     }
@@ -729,7 +778,13 @@
         if (userRole !== "admin") { showToast("只有主管可以刪除", "ti-alert-circle"); return; }
         if (!confirm("確定刪除這筆日誌？")) return;
         const log = logs[i];
-        await syncToCloud({ action: "delete", id: log.id, project: log.project }, "已刪除並同步雲端");
+        showLoading("刪除中...");
+        const res = await api.deleteLog(log.id, log.project);
+        hideLoading();
+        if (!res.success) { showApiError(res); return; }
+        logs = logs.filter(l => l.id !== log.id);
+        commitLocalChange();
+        showToast("已刪除並同步雲端");
     }
 
     // ── 統計 ──
@@ -748,7 +803,7 @@
 
     // ── 篩選標籤 ──
     function renderTagFilter() {
-        const projects = [...new Set(logs.map(l => l.project))].slice(0, 8);
+        const projects = [...new Set(logs.map(l => l.project))];
         const el = $("tagFilter");
         if (!projects.length) { el.innerHTML=""; return; }
         const allBtn = `<span class="tag${!filterProject?" active":""}" onclick="setFilter('')">全部</span>`;
@@ -782,30 +837,28 @@
         if (!pendingDeleteProject) return;
         $("deleteModal").style.display = "none";
         const project = pendingDeleteProject;
-        const projectLogs = logs.filter(l => l.project === project);
-        let failed = 0;
-        showLoading("刪除專案中...");
-        for (const log of projectLogs) {
-            try {
-                const res = await fetch(GAS_URL, {
-                    method: "POST",
-                    headers: { "Content-Type": "text/plain;charset=UTF-8" },
-                    body: JSON.stringify({ action: "delete", id: log.id, project: log.project })
-                });
-                const result = await res.json();
-                if (result.status !== "success") failed++;
-            } catch(e) { failed++; }
-        }
-        if (filterProject === project && !failed) filterProject = "";
         deleteMode = ""; pendingDeleteProject = "";
-        await loadLogs(true);
-        if (failed) showToast(`有 ${failed} 筆刪除失敗，請再試一次`, "ti-alert-circle");
-        else showToast("專案已全部刪除", "ti-trash");
+        showLoading("刪除專案中...");
+        const res = await api.deleteProject(project);
+        hideLoading();
+        // 只有 GAS 確認整個專案都刪除後，才移除本地資料
+        if (!res.success) { showApiError(res); renderTagFilter(); return; }
+        logs = logs.filter(l => l.project !== project);
+        if (filterProject === project) filterProject = "";
+        commitLocalChange();
+        showToast(`專案已全部刪除（${res.data.deleted} 筆）`, "ti-trash");
     }
     function closeDeleteModal() {
         $("deleteModal").style.display = "none";
         deleteMode = ""; pendingDeleteProject = "";
         renderTagFilter();
+    }
+
+    // ── 搜尋（停止輸入 250ms 後才重繪，只搜尋本地已載入的資料）──
+    let searchTimer = null;
+    function onSearchInput() {
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(renderLogs, 250);
     }
 
     // ── 日誌列表 ──

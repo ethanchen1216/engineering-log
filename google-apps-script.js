@@ -43,6 +43,52 @@ function findLogRow(ss, id, preferredSheetName) {
   return null;
 }
 
+// 工作表的一列 → 前端使用的日誌物件（讀取與寫入回傳共用，確保格式一致）
+function rowToLog(row, rowIndex) {
+  var ymd = toYMD(row[0]);
+  return {
+    id:           String(row[7] || Date.now() + "_" + rowIndex),
+    date:         ymd,
+    project:      String(row[1] || ""),
+    weather:      String(row[2] || ""),
+    workCategory: String(row[3] || ""),
+    workType:     String(row[4] || ""),
+    workerCount:  String(row[5] || ""),
+    content:      String(row[6] || ""),
+    ts:           ymd
+  };
+}
+
+// 刪除整個專案：在所有專案工作表中刪除 B 欄等於該專案名稱的列
+function deleteProjectRows(ss, project) {
+  var deleted = 0;
+  ss.getSheets().forEach(function(sheet) {
+    if (SKIP_SHEETS.indexOf(sheet.getName()) >= 0) return;
+    var rows = sheet.getDataRange().getValues();
+    // 由下往上，把連續的符合列合併成一次 deleteRows，避免列號位移
+    var i = rows.length - 1;
+    while (i >= 1) {
+      if (String(rows[i][1]) !== project) { i--; continue; }
+      var end = i;
+      while (i >= 1 && String(rows[i][1]) === project) i--;
+      sheet.deleteRows(i + 2, end - i);
+      deleted += end - i;
+    }
+  });
+  return deleted;
+}
+
+// 計算某專案剩餘的列數（刪除後驗證用）
+function countProjectRows(ss, project) {
+  var count = 0;
+  ss.getSheets().forEach(function(sheet) {
+    if (SKIP_SHEETS.indexOf(sheet.getName()) >= 0) return;
+    var rows = sheet.getDataRange().getValues();
+    for (var i = 1; i < rows.length; i++) if (String(rows[i][1]) === project) count++;
+  });
+  return count;
+}
+
 // 找或建立專案工作表
 function getOrCreateSheet(ss, sheetName) {
   var sheet = ss.getSheetByName(sheetName);
@@ -80,20 +126,7 @@ function doGet(e) {
       for (var j = 1; j < data.length; j++) {
         var row = data[j];
         if (!row[0] && !row[1]) continue;
-
-        var ymd = toYMD(row[0]);
-
-        allLogs.push({
-          id:           String(row[7] || Date.now() + "_" + j),
-          date:         ymd,
-          project:      String(row[1] || ""),
-          weather:      String(row[2] || ""),
-          workCategory: String(row[3] || ""),
-          workType:     String(row[4] || ""),
-          workerCount:  String(row[5] || ""),
-          content:      String(row[6] || ""),
-          ts:           ymd
-        });
+        allLogs.push(rowToLog(row, j));
       }
     });
 
@@ -129,6 +162,18 @@ function handlePost(e) {
   var data = JSON.parse(e.postData.contents);
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheetName = toSheetName(data.project);
+
+  // ── 刪除整個專案 ──
+  if (data.action === "deleteProject") {
+    var project = String(data.project || "");
+    if (!project) return jsonOutput({ status: "error", message: "未指定專案名稱" });
+    var deletedCount = deleteProjectRows(ss, project);
+    var remaining = countProjectRows(ss, project);
+    if (remaining > 0) {
+      return jsonOutput({ status: "error", message: "專案只刪除了 " + deletedCount + " 筆，還剩 " + remaining + " 筆，請再試一次" });
+    }
+    return jsonOutput({ status: "success", action: "deleteProject", deleted: deletedCount });
+  }
 
   // ── 刪除 ──
   if (data.action === "delete") {
@@ -176,14 +221,16 @@ function handlePost(e) {
       writeRow(target, target.getLastRow() + 1, rowValues);
       found.sheet.deleteRow(found.row);
     }
-    return jsonOutput({ status: "success", action: "update" });
+    // 回傳更新後的日誌，前端直接更新本地資料，不必重新讀取全部
+    return jsonOutput({ status: "success", action: "update", log: rowToLog(rowValues, found.row) });
   }
 
   // ── 新增 ──
   var sheet = getOrCreateSheet(ss, sheetName);
-  writeRow(sheet, sheet.getLastRow() + 1, rowValues);
+  var newRow = sheet.getLastRow() + 1;
+  writeRow(sheet, newRow, rowValues);
 
-  return jsonOutput({ status: "success", action: "insert", projectSheet: sheetName });
+  return jsonOutput({ status: "success", action: "insert", projectSheet: sheetName, log: rowToLog(rowValues, newRow) });
 }
 
 function doOptions(e) {
