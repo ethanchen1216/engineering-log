@@ -59,12 +59,20 @@ function rowToLog(row, rowIndex) {
   };
 }
 
+// 專案工作表只剩標題列時移除，避免留下空白工作表（有任何其他內容就保留）
+function removeSheetIfEmpty(ss, sheet) {
+  if (SKIP_SHEETS.indexOf(sheet.getName()) >= 0) return;
+  if (sheet.getLastRow() > 1 || ss.getSheets().length <= 1) return;
+  ss.deleteSheet(sheet);
+}
+
 // 刪除整個專案：在所有專案工作表中刪除 B 欄等於該專案名稱的列
 function deleteProjectRows(ss, project) {
   var deleted = 0;
   ss.getSheets().forEach(function(sheet) {
     if (SKIP_SHEETS.indexOf(sheet.getName()) >= 0) return;
     var rows = sheet.getDataRange().getValues();
+    var deletedHere = 0;
     // 由下往上，把連續的符合列合併成一次 deleteRows，避免列號位移
     var i = rows.length - 1;
     while (i >= 1) {
@@ -72,8 +80,10 @@ function deleteProjectRows(ss, project) {
       var end = i;
       while (i >= 1 && String(rows[i][1]) === project) i--;
       sheet.deleteRows(i + 2, end - i);
-      deleted += end - i;
+      deletedHere += end - i;
     }
+    if (deletedHere) removeSheetIfEmpty(ss, sheet);
+    deleted += deletedHere;
   });
   return deleted;
 }
@@ -180,6 +190,7 @@ function handlePost(e) {
     var delFound = data.id ? findLogRow(ss, data.id, sheetName) : null;
     if (!delFound) return jsonOutput({ status: "error", message: "找不到此筆日誌，可能已被刪除" });
     delFound.sheet.deleteRow(delFound.row);
+    removeSheetIfEmpty(ss, delFound.sheet);
     return jsonOutput({ status: "success", action: "delete" });
   }
 
@@ -220,6 +231,7 @@ function handlePost(e) {
       var target = getOrCreateSheet(ss, sheetName);
       writeRow(target, target.getLastRow() + 1, rowValues);
       found.sheet.deleteRow(found.row);
+      removeSheetIfEmpty(ss, found.sheet);
     }
     // 回傳更新後的日誌，前端直接更新本地資料，不必重新讀取全部
     return jsonOutput({ status: "success", action: "update", log: rowToLog(rowValues, found.row) });
