@@ -8,6 +8,34 @@ function jsonOutput(obj) {
     .setMimeType(ContentService.MimeType.JSON);
 }
 
+// 錯誤回應：code 給 Worker 判斷用，message 為可直接顯示給使用者的中文訊息
+function jsonError(code, message) {
+  return jsonOutput({ status: "error", code: code, message: message });
+}
+
+// ── Worker → GAS 共用密鑰驗證 ──
+// 指令碼屬性（專案設定 → 指令碼屬性）：
+//   GAS_SHARED_SECRET：與 Cloudflare Worker 的 GAS_SHARED_SECRET 相同
+//   REQUIRE_SECRET：   "true" 時拒絕所有沒有密鑰的請求；切換到 Worker 前維持 "false"，舊前端仍可使用
+function secretMode() {
+  var props = PropertiesService.getScriptProperties();
+  return {
+    expected: props.getProperty("GAS_SHARED_SECRET") || "",
+    required: props.getProperty("REQUIRE_SECRET") === "true"
+  };
+}
+
+// 回傳 true 表示通過；有帶密鑰就必須正確，REQUIRE_SECRET 開啟時一定要帶
+function checkSecret(data) {
+  var mode = secretMode();
+  if (data.secret !== undefined) return !!mode.expected && String(data.secret) === mode.expected;
+  return !mode.required;
+}
+
+function todayYMD() {
+  return Utilities.formatDate(new Date(), TIME_ZONE, "yyyy-MM-dd");
+}
+
 // 日期統一輸出為 YYYY-MM-DD（Sheets 會把日期字串自動轉成 Date 物件）
 function toYMD(value) {
   if (value instanceof Date) return Utilities.formatDate(value, TIME_ZONE, "yyyy-MM-dd");
@@ -120,75 +148,96 @@ function writeRow(sheet, rowNum, values) {
 }
 
 // ── 讀取所有專案工作表的資料 ──
+function listLogs(ss) {
+  var allLogs = [];
+  ss.getSheets().forEach(function(sheet) {
+    // 跳過總表
+    if (SKIP_SHEETS.indexOf(sheet.getName()) >= 0) return;
+
+    var data = sheet.getDataRange().getValues();
+    if (data.length <= 1) return;
+
+    for (var j = 1; j < data.length; j++) {
+      var row = data[j];
+      if (!row[0] && !row[1]) continue;
+      allLogs.push(rowToLog(row, j));
+    }
+  });
+
+  // 依日期由新到舊排序
+  allLogs.sort(function(a, b) {
+    return b.ts.localeCompare(a.ts);
+  });
+  return allLogs;
+}
+
+// GET 無法夾帶密鑰，REQUIRE_SECRET 開啟後一律拒絕（Worker 改用 POST action "getLogs"）
 function doGet(e) {
   try {
-    var ss = SpreadsheetApp.getActiveSpreadsheet();
-    var sheets = ss.getSheets();
-    var allLogs = [];
-
-    sheets.forEach(function(sheet) {
-      // 跳過總表
-      if (SKIP_SHEETS.indexOf(sheet.getName()) >= 0) return;
-
-      var data = sheet.getDataRange().getValues();
-      if (data.length <= 1) return;
-
-      for (var j = 1; j < data.length; j++) {
-        var row = data[j];
-        if (!row[0] && !row[1]) continue;
-        allLogs.push(rowToLog(row, j));
-      }
-    });
-
-    // 依日期由新到舊排序
-    allLogs.sort(function(a, b) {
-      return b.ts.localeCompare(a.ts);
-    });
-
-    return jsonOutput({ status: "success", logs: allLogs });
-
+    if (secretMode().required) return jsonError("UNAUTHORIZED", "未授權的請求");
+    return jsonOutput({ status: "success", logs: listLogs(SpreadsheetApp.getActiveSpreadsheet()) });
   } catch(error) {
-    return jsonOutput({ status: "error", message: error.toString() });
+    return jsonError("INTERNAL_ERROR", error.toString());
   }
 }
 
-// ── 寫入／修改／刪除日誌 ──
+// ── 讀取／寫入／修改／刪除日誌 ──
 function doPost(e) {
+  var data;
+  try {
+    if (!e.postData || !e.postData.contents) throw new Error("empty");
+    data = JSON.parse(e.postData.contents);
+  } catch(err) {
+    return jsonError("BAD_REQUEST", "沒有收到有效資料");
+  }
+  // 先驗證密鑰，未授權的請求不會佔用鎖
+  if (!checkSecret(data)) return jsonError("UNAUTHORIZED", "未授權的請求");
+  delete data.secret;
+
+  if (data.action === "getLogs") {
+    try {
+      return jsonOutput({ status: "success", action: "getLogs", logs: listLogs(SpreadsheetApp.getActiveSpreadsheet()) });
+    } catch(error) {
+      return jsonError("INTERNAL_ERROR", error.toString());
+    }
+  }
+
   // 同一時間只處理一個寫入，避免同時修改造成列號錯位
   var lock = LockService.getScriptLock();
-  if (!lock.tryLock(15000)) return jsonOutput({ status: "error", message: "系統忙碌中，請稍後再試" });
+  if (!lock.tryLock(15000)) return jsonError("BUSY", "系統忙碌中，請稍後再試");
   try {
-    return handlePost(e);
+    return handlePost(data);
   } catch(error) {
-    return jsonOutput({ status: "error", message: error.toString() });
+    return jsonError("INTERNAL_ERROR", error.toString());
   } finally {
     lock.releaseLock();
   }
 }
 
-function handlePost(e) {
-  if (!e.postData || !e.postData.contents) throw new Error("沒有收到有效資料");
-
-  var data = JSON.parse(e.postData.contents);
+function handlePost(data) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheetName = toSheetName(data.project);
+  // actor 由 Worker 帶入（只有通過密鑰驗證的請求才會有）；舊前端直接呼叫時沒有 actor，維持原本行為
+  var isWorkerRole = !!(data.actor && data.actor.role === "worker");
 
   // ── 刪除整個專案 ──
   if (data.action === "deleteProject") {
+    if (isWorkerRole) return jsonError("FORBIDDEN", "只有主管可以刪除專案");
     var project = String(data.project || "");
-    if (!project) return jsonOutput({ status: "error", message: "未指定專案名稱" });
+    if (!project) return jsonError("BAD_REQUEST", "未指定專案名稱");
     var deletedCount = deleteProjectRows(ss, project);
     var remaining = countProjectRows(ss, project);
     if (remaining > 0) {
-      return jsonOutput({ status: "error", message: "專案只刪除了 " + deletedCount + " 筆，還剩 " + remaining + " 筆，請再試一次" });
+      return jsonError("PARTIAL_DELETE", "專案只刪除了 " + deletedCount + " 筆，還剩 " + remaining + " 筆，請再試一次");
     }
     return jsonOutput({ status: "success", action: "deleteProject", deleted: deletedCount });
   }
 
   // ── 刪除 ──
   if (data.action === "delete") {
+    if (isWorkerRole) return jsonError("FORBIDDEN", "只有主管可以刪除");
     var delFound = data.id ? findLogRow(ss, data.id, sheetName) : null;
-    if (!delFound) return jsonOutput({ status: "error", message: "找不到此筆日誌，可能已被刪除" });
+    if (!delFound) return jsonError("NOT_FOUND", "找不到此筆日誌，可能已被刪除");
     delFound.sheet.deleteRow(delFound.row);
     removeSheetIfEmpty(ss, delFound.sheet);
     return jsonOutput({ status: "success", action: "delete" });
@@ -220,7 +269,11 @@ function handlePost(e) {
   // ── 修改 ──
   if (data.action === "update") {
     var found = data.id ? findLogRow(ss, data.id, sheetName) : null;
-    if (!found) return jsonOutput({ status: "error", message: "找不到此筆日誌，可能已被刪除，請重新整理" });
+    if (!found) return jsonError("NOT_FOUND", "找不到此筆日誌，可能已被刪除，請重新整理");
+    // 師傅只能修改當天的日誌（依雲端上原本的日期判斷，不信任前端）
+    if (isWorkerRole && toYMD(found.values[0]) !== todayYMD()) {
+      return jsonError("FORBIDDEN", "師傅只能修改當天的日誌");
+    }
 
     rowValues[8] = found.values[8] || rowValues[8]; // 保留原本的填寫時間
 
@@ -238,6 +291,7 @@ function handlePost(e) {
   }
 
   // ── 新增 ──
+  if (data.action !== "insert") return jsonError("BAD_REQUEST", "未知的操作");
   var sheet = getOrCreateSheet(ss, sheetName);
   var newRow = sheet.getLastRow() + 1;
   writeRow(sheet, newRow, rowValues);

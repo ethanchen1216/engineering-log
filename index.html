@@ -308,9 +308,8 @@
 <div id="loading" class="loading-overlay"><div class="spinner"></div><div id="loadingText">同步中...</div></div>
 
 <script>
-    const GAS_URL = "https://script.google.com/macros/s/AKfycbz6JPTD3E5IYZ8SN0Qw4stIx4fslAbNSsDWcmRI6rtw0RmJ-XVoOU9m1PAUHflyla2N/exec";
-    const HASH_WORKER = "5eef3925";
-    const HASH_ADMIN  = "626a3455";
+    // Cloudflare Worker API（密碼驗證與權限判斷都在 Worker，前端不保存任何密碼資訊）
+    const API_BASE = "https://engineering-log-api.REPLACE_ME.workers.dev";
 
     const WORK_TYPES = {
         "結構": ["鋼筋","水電","壓送","土方","鷹架","安全支撐","組工","打石工","雜項"],
@@ -361,11 +360,6 @@
     }
     function showLoading(text) { $("loadingText").textContent = text || "同步中..."; $("loading").style.display = "flex"; }
     function hideLoading() { $("loading").style.display = "none"; }
-    function simpleHash(s) {
-        let h = 0;
-        for (let i = 0; i < s.length; i++) { h = ((h << 5) - h) + s.charCodeAt(i); h |= 0; }
-        return (h >>> 0).toString(16).slice(0,8);
-    }
 
     // ── 密碼鍵盤 ──
     function pinPress(n) {
@@ -383,31 +377,41 @@
     function updatePinDisplay() {
         for (let i = 0; i < 6; i++) $("b"+i).classList.toggle("filled", i < pinBuf.length);
     }
-    function checkPin() {
-        const h = simpleHash(pinBuf);
-        if (h === HASH_WORKER) {
-            userRole = "worker";
-            $("roleTag").textContent = "👷 師傅模式";
-            $("roleTag").style.color = "#2cc3a6";
-            proceedLogin();
-        } else if (h === HASH_ADMIN) {
-            userRole = "admin";
+    // 密碼送到伺服器驗證，角色由伺服器決定
+    async function checkPin() {
+        showLoading("驗證中...");
+        const res = await api.login(pinBuf);
+        hideLoading();
+        pinBuf = ""; updatePinDisplay();
+        if (!res.success) { $("pinError").textContent = res.error; return; }
+        $("pinError").textContent = "";
+        userRole = res.data.role;
+        if (userRole === "admin") {
             $("roleTag").textContent = "🔑 主管模式";
             $("roleTag").style.color = "#e8870a";
-            proceedLogin();
         } else {
-            $("pinError").textContent = "密碼錯誤，請再試一次";
-            pinBuf = ""; updatePinDisplay();
+            $("roleTag").textContent = "👷 師傅模式";
+            $("roleTag").style.color = "#2cc3a6";
         }
+        proceedLogin();
     }
+    let hasLoggedIn = false;
     function proceedLogin() {
         isLocked = false;
         $("lockScreen").style.display = "none";
         $("mainApp").style.display = "block";
-        if (userRole === "admin") $("btnExport").style.display = "inline-flex";
-        initDate();
-        updateWorkTypeOptions();
+        $("btnExport").style.display = userRole === "admin" ? "inline-flex" : "none";
+        // 登入逾時後重新登入：保留表單內容，不重設日期
+        if (!hasLoggedIn) { initDate(); updateWorkTypeOptions(); hasLoggedIn = true; }
         loadLogs();
+    }
+    // 登入逾時：回到密碼畫面（表單內容保留）
+    function lockApp(message) {
+        isLocked = true;
+        $("mainApp").style.display = "none";
+        $("lockScreen").style.display = "block";
+        $("pinError").textContent = message || "登入已逾時，請重新輸入密碼";
+        pinBuf = ""; updatePinDisplay();
     }
     window.addEventListener("keydown", e => {
         if (!isLocked) return;
@@ -550,52 +554,43 @@
     }
 
     // ── API 層：所有雲端通訊只經過這裡 ──
-    // 回傳統一格式：成功 { success: true, data }；失敗 { success: false, error, network }
-    // Phase 3 改接 Cloudflare Worker 時，只需要修改這一段
+    // 回傳統一格式：成功 { success: true, data }；失敗 { success: false, error, code, network }
+    // 前端 → Cloudflare Worker（驗證 token、判斷權限）→ GAS
+    let authToken = null; // 只存在記憶體，重新整理頁面需重新登入
     const api = {
-        async getLogs() {
-            const r = await gasRequest("getLogs", "GET");
-            return r.success ? { success: true, data: r.body.logs || [] } : r;
+        async login(pin) {
+            const r = await apiRequest("login", "POST", "/auth/login", { pin }, false);
+            if (r.success) authToken = r.data.token;
+            return r;
         },
-        async createLog(log) {
-            const r = await gasRequest("createLog", "POST", { action: "insert", ...log });
-            return r.success ? { success: true, data: r.body.log || null } : r;
-        },
-        async updateLog(id, log) {
-            const r = await gasRequest("updateLog", "POST", { action: "update", ...log, id });
-            return r.success ? { success: true, data: r.body.log || null } : r;
-        },
-        async deleteLog(id, project) {
-            const r = await gasRequest("deleteLog", "POST", { action: "delete", id, project });
-            return r.success ? { success: true, data: null } : r;
-        },
-        async deleteProject(project) {
-            const r = await gasRequest("deleteProject", "POST", { action: "deleteProject", project });
-            if (!r.success) return r;
-            // 舊版 GAS 不認得 deleteProject 會誤當成新增並回傳成功，必須確認 GAS 真的執行了專案刪除
-            if (r.body.action !== "deleteProject") return { success: false, error: "雲端程式版本過舊，請先更新 GAS", network: false };
-            return { success: true, data: { deleted: r.body.deleted || 0 } };
-        }
+        getLogs()                 { return apiRequest("getLogs", "GET", "/logs"); },
+        createLog(log)            { return apiRequest("createLog", "POST", "/logs", log); },
+        updateLog(id, log)        { return apiRequest("updateLog", "PUT", `/logs/${encodeURIComponent(id)}`, log); },
+        deleteLog(id, project)    { return apiRequest("deleteLog", "DELETE", `/logs/${encodeURIComponent(id)}?project=${encodeURIComponent(project || "")}`); },
+        deleteProject(project)    { return apiRequest("deleteProject", "DELETE", `/projects/${encodeURIComponent(project)}`); }
     };
 
-    async function gasRequest(name, method, payload) {
+    async function apiRequest(name, method, path, body, needsAuth = true) {
         const t0 = performance.now();
+        const headers = {};
+        if (body) headers["Content-Type"] = "application/json";
+        if (needsAuth && authToken) headers["Authorization"] = "Bearer " + authToken;
+        let json;
         try {
-            const res = method === "GET"
-                ? await fetch(`${GAS_URL}?_ts=${Date.now()}`, { method: "GET" })
-                : await fetch(GAS_URL, {
-                    method: "POST",
-                    headers: { "Content-Type": "text/plain;charset=UTF-8" }, // 避免 CORS preflight
-                    body: JSON.stringify(payload)
-                });
-            const body = await res.json();
-            console.info(`[api] ${name} ${Math.round(performance.now() - t0)}ms ${body.status}`);
-            if (body.status === "success") return { success: true, body };
-            return { success: false, error: body.message || "未知錯誤", network: false };
+            const res = await fetch(API_BASE + path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+            json = await res.json();
         } catch(err) {
             console.info(`[api] ${name} ${Math.round(performance.now() - t0)}ms network error`);
-            return { success: false, error: "上傳失敗，請確認網路", network: true };
+            return { success: false, error: "上傳失敗，請確認網路", code: "NETWORK", network: true };
         }
+        console.info(`[api] ${name} ${Math.round(performance.now() - t0)}ms ${json.success ? "success" : json.error}`);
+        if (json.success) return { success: true, data: json.data };
+        // 登入逾時或 token 無效：回到密碼畫面，表單內容保留
+        if (needsAuth && (json.error === "TOKEN_EXPIRED" || json.error === "UNAUTHORIZED")) {
+            authToken = null;
+            lockApp(json.message);
+        }
+        return { success: false, error: json.message || "系統錯誤，請稍後再試", code: json.error, network: false };
     }
 
     function showApiError(res) {
@@ -621,6 +616,7 @@
         showLoading("讀取雲端日誌中...");
         const res = await api.getLogs();
         hideLoading();
+        if (res.code === "TOKEN_EXPIRED" || res.code === "UNAUTHORIZED") return; // 已回到密碼畫面
         if (res.success) {
             logs = res.data;
             saveLocalBackup();
