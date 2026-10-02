@@ -41,7 +41,7 @@ openssl rand -base64 48 | tr -d '\n' | pbcopy
 2. 安裝 Node.js LTS：https://nodejs.org → 下載 macOS Installer（.pkg）並安裝
 3. 登入 wrangler（會開瀏覽器請你授權）：
    ```bash
-   cd ~/工地日報表-app/worker && npx wrangler login
+   cd ~/工地日報表-app/worker && npx wrangler@4 login
    ```
 
 ## B. 測試環境
@@ -57,12 +57,12 @@ openssl rand -base64 48 | tr -d '\n' | pbcopy
 ### B2. 測試 Worker
 ```bash
 cd ~/工地日報表-app/worker
-npx wrangler deploy --env test
-npx wrangler secret put PIN_ADMIN --env test
-npx wrangler secret put PIN_WORKER --env test
-npx wrangler secret put TOKEN_SECRET --env test
-npx wrangler secret put GAS_SHARED_SECRET --env test
-npx wrangler secret put GAS_URL --env test
+npx wrangler@4 deploy --env test
+npx wrangler@4 secret put PIN_ADMIN --env test
+npx wrangler@4 secret put PIN_WORKER --env test
+npx wrangler@4 secret put TOKEN_SECRET --env test
+npx wrangler@4 secret put GAS_SHARED_SECRET --env test
+npx wrangler@4 secret put GAS_URL --env test
 ```
 每個 `secret put` 會要你貼上值；部署完成會顯示測試 Worker 網址
 （`https://engineering-log-api-test.<你的子網域>.workers.dev`）。
@@ -90,12 +90,12 @@ cd ~/工地日報表-app && python3 scripts/smoke_test.py <測試 Worker 網址>
 ### C2. 正式 Worker
 ```bash
 cd ~/工地日報表-app/worker
-npx wrangler deploy
-npx wrangler secret put PIN_ADMIN
-npx wrangler secret put PIN_WORKER
-npx wrangler secret put TOKEN_SECRET
-npx wrangler secret put GAS_SHARED_SECRET
-npx wrangler secret put GAS_URL
+npx wrangler@4 deploy --env=""
+npx wrangler@4 secret put PIN_ADMIN --env=""
+npx wrangler@4 secret put PIN_WORKER --env=""
+npx wrangler@4 secret put TOKEN_SECRET --env=""
+npx wrangler@4 secret put GAS_SHARED_SECRET --env=""
+npx wrangler@4 secret put GAS_URL --env=""
 ```
 
 ### C3. 正式環境驗證（只讀，不寫入正式資料）
@@ -126,7 +126,7 @@ cd ~/工地日報表-app && python3 scripts/smoke_test.py <正式 Worker 網址>
 
 ## 日後維運
 
-- **換 PIN**：`npx wrangler secret put PIN_WORKER`，立即生效，不需改程式
+- **換 PIN**：`npx wrangler@4 secret put PIN_WORKER --env=""`，立即生效，不需改程式
 - **讓所有人登出**：重新設定 `TOKEN_SECRET`
 - **換 GAS 密鑰**：先改 Worker secret，再改 GAS 指令碼屬性（中間約數十秒寫入會失敗）
-- **看 Worker 紀錄**：`npx wrangler tail`
+- **看 Worker 紀錄**：`npx wrangler@4 tail --env=""`
