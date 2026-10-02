@@ -13,11 +13,13 @@ from datetime import datetime, timedelta, timezone
 
 TEST_PROJECT = "__PHASE3_SMOKE_TEST__"
 ORIGIN = "https://ethanchen1216.github.io"
+# Cloudflare 會擋 Python 預設的 User-Agent（error 1010），改用自訂名稱
+USER_AGENT = "engineering-log-smoke-test/1.0"
 results = []
 
 
 def call(base, method, path, body=None, token=None, origin=None):
-    headers = {}
+    headers = {"User-Agent": USER_AGENT}
     data = None
     if body is not None:
         headers["Content-Type"] = "application/json"
@@ -123,7 +125,7 @@ def main():
         print("\n[7] 繞過 Worker 直接呼叫 GAS")
         def gas(method, body=None):
             data = json.dumps(body).encode() if body is not None else None
-            req = urllib.request.Request(args.gas, data=data, method=method, headers={"Content-Type": "text/plain"})
+            req = urllib.request.Request(args.gas, data=data, method=method, headers={"Content-Type": "text/plain", "User-Agent": USER_AGENT})
             with urllib.request.urlopen(req, timeout=60) as r:
                 return json.loads(r.read())
         check("GET 被拒", gas("GET").get("code") == "UNAUTHORIZED", "REQUIRE_SECRET 尚未設為 true？")
