@@ -1,0 +1,6 @@
+{
+  "projects": {
+    "test": "shiudi-log-test",
+    "prod": "shiudi-log-prod"
+  }
+}
