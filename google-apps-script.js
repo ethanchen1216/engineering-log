@@ -192,7 +192,18 @@ function doPost(e) {
   }
   // 先驗證密鑰，未授權的請求不會佔用鎖
   if (!checkSecret(data)) return jsonError("UNAUTHORIZED", "未授權的請求");
+  // Phase 4 系統動作（遷移、備份）一律要求帶正確密鑰，不受 REQUIRE_SECRET 設定影響
+  if (SYSTEM_ACTIONS.indexOf(data.action) >= 0 && data.secret === undefined) return jsonError("UNAUTHORIZED", "未授權的請求");
   delete data.secret;
+
+  if (data.action === "exportAll" || data.action === "sheetsStats") {
+    try {
+      var ssRead = SpreadsheetApp.getActiveSpreadsheet();
+      return jsonOutput(data.action === "exportAll" ? exportAll(ssRead) : sheetsStats(ssRead));
+    } catch(error) {
+      return jsonError("INTERNAL_ERROR", error.toString());
+    }
+  }
 
   if (data.action === "getLogs") {
     try {
@@ -219,6 +230,10 @@ function handlePost(data) {
   var sheetName = toSheetName(data.project);
   // actor 由 Worker 帶入（只有通過密鑰驗證的請求才會有）；舊前端直接呼叫時沒有 actor，維持原本行為
   var isWorkerRole = !!(data.actor && data.actor.role === "worker");
+
+  // ── Phase 4：Firestore → Sheets 備份 ──
+  if (data.action === "backupApply") return jsonOutput(backupApply(ss, data.ops || []));
+  if (data.action === "fullSync") return jsonOutput(fullSync(ss, data.logs || [], Number(data.snapshotAt) || 0));
 
   // ── 刪除整個專案 ──
   if (data.action === "deleteProject") {
@@ -297,6 +312,232 @@ function handlePost(data) {
   writeRow(sheet, newRow, rowValues);
 
   return jsonOutput({ status: "success", action: "insert", projectSheet: sheetName, log: rowToLog(rowValues, newRow) });
+}
+
+// ════════════════════════════════════════════════════════════
+// Phase 4：Firestore 為主要資料庫，Sheets 為備份 / 報表
+// ════════════════════════════════════════════════════════════
+// J 欄「同步版本」：Firestore updatedAt（毫秒）。只接受版本 >= 目前版本的資料，
+// 快速連續修改時，舊版本即使晚到也不會覆蓋新版本。
+// 刪除另記錄在指令碼屬性 tomb:<id>（保留 30 天），避免已刪除的資料被晚到的舊版本重新寫回。
+var SYSTEM_ACTIONS = ["exportAll", "sheetsStats", "backupApply", "fullSync"];
+var VERSION_COL = 10; // J
+var TOMBSTONE_PREFIX = "tomb:";
+var TOMBSTONE_TTL_MS = 30 * 24 * 3600 * 1000;
+var FULL_SYNC_MIN_RATIO = 0.8;
+
+function cellType(v) {
+  return v instanceof Date ? "date" : typeof v;
+}
+
+// 遷移與比對用：每一列的原始內容、位置、填寫時間、同步版本與儲存格型態（只讀）
+function exportAll(ss) {
+  var rows = [];
+  ss.getSheets().forEach(function(sheet) {
+    if (SKIP_SHEETS.indexOf(sheet.getName()) >= 0) return;
+    var data = sheet.getDataRange().getValues();
+    for (var j = 1; j < data.length; j++) {
+      var row = data[j];
+      if (!row[0] && !row[1]) continue;
+      var log = rowToLog(row, j);
+      log.id = String(row[7] || ""); // 不使用 rowToLog 的隨機 ID，缺少 ID 必須如實回報
+      rows.push({
+        sheet: sheet.getName(),
+        row: j + 1,
+        id: log.id,
+        log: log,
+        createdAt: row[8] instanceof Date ? row[8].toISOString() : String(row[8] || ""),
+        version: Number(row[VERSION_COL - 1]) || 0,
+        cellTypes: row.slice(0, 9).map(cellType)
+      });
+    }
+  });
+  return { status: "success", action: "exportAll", rows: rows, skippedSheets: SKIP_SHEETS };
+}
+
+// 有系統ID 的列（managed）與沒有 ID 的列（unmanaged，備份不會刪除）
+function readManagedRows(ss) {
+  var byId = {}, managed = 0, unmanaged = 0;
+  ss.getSheets().forEach(function(sheet) {
+    if (SKIP_SHEETS.indexOf(sheet.getName()) >= 0) return;
+    var rows = sheet.getDataRange().getValues();
+    for (var i = 1; i < rows.length; i++) {
+      var row = rows[i];
+      if (!row[0] && !row[1]) continue;
+      var id = String(row[7] || "");
+      if (!id) { unmanaged++; continue; }
+      managed++;
+      byId[id] = { sheet: sheet, row: i + 1, values: row };
+    }
+  });
+  return { byId: byId, managed: managed, unmanaged: unmanaged };
+}
+
+function sheetsStats(ss) {
+  var snap = readManagedRows(ss);
+  return { status: "success", action: "sheetsStats", managedRows: snap.managed, unmanagedRows: snap.unmanaged };
+}
+
+function rowVersion(values) {
+  return Number(values[VERSION_COL - 1]) || 0;
+}
+
+function tombstoneVersion(id) {
+  return Number(PropertiesService.getScriptProperties().getProperty(TOMBSTONE_PREFIX + id)) || 0;
+}
+
+function setTombstone(id, version) {
+  var props = PropertiesService.getScriptProperties();
+  if (version > (Number(props.getProperty(TOMBSTONE_PREFIX + id)) || 0)) props.setProperty(TOMBSTONE_PREFIX + id, String(version));
+}
+
+function pruneTombstones(now) {
+  var props = PropertiesService.getScriptProperties();
+  var all = props.getProperties();
+  Object.keys(all).forEach(function(k) {
+    if (k.indexOf(TOMBSTONE_PREFIX) === 0 && Number(all[k]) < now - TOMBSTONE_TTL_MS) props.deleteProperty(k);
+  });
+}
+
+function ensureVersionHeader(sheet) {
+  var cell = sheet.getRange(1, VERSION_COL);
+  if (cell.getValue() === "同步版本") return;
+  cell.setValue("同步版本");
+  cell.setFontWeight("bold");
+  cell.setBackground("#1a2332");
+  cell.setFontColor("#ffffff");
+}
+
+function backupRowValues(log, createdAt, version) {
+  return [
+    log.date || "", log.project || "", log.weather || "", log.workCategory || "",
+    log.workType || "", log.workerCount || "", log.content || "", String(log.id),
+    createdAt, version
+  ];
+}
+
+function writeVersionedRow(sheet, rowNum, values) {
+  sheet.getRange(rowNum, 2, 1, 7).setNumberFormat("@");
+  sheet.getRange(rowNum, 1, 1, VERSION_COL).setValues([values]);
+}
+
+function sameBackupRow(values, log, version) {
+  var cur = rowToLog(values, 0);
+  var fields = ["date", "project", "weather", "workCategory", "workType", "workerCount", "content"];
+  for (var i = 0; i < fields.length; i++) {
+    if (cur[fields[i]] !== String(log[fields[i]] || "")) return false;
+  }
+  return rowVersion(values) === version;
+}
+
+function toDateOrNow(iso) {
+  var d = iso ? new Date(iso) : null;
+  return d && !isNaN(d.getTime()) ? d : new Date();
+}
+
+// 依版本套用一批 upsert / delete。列的刪除統一在最後由下往上執行，避免列號位移。
+// opts.deleteExtras：完整同步時，刪除 Firestore 沒有、且版本早於 snapshotAt 的列
+function applyBackupOps(ss, items, opts) {
+  opts = opts || {};
+  var snap = readManagedRows(ss);
+  var results = [];
+  var toDelete = [];
+  var stats = { inserted: 0, updated: 0, unchanged: 0, stale: 0, deleted: 0, absent: 0, errors: 0 };
+
+  items.forEach(function(it) {
+    var id = String(it.id || (it.log && it.log.id) || "");
+    var version = Number(it.version) || 0;
+    var result;
+    try {
+      if (!id) throw new Error("missing id");
+      if (it.op === "delete") {
+        var target = snap.byId[id];
+        if (!target) { setTombstone(id, version); result = "absent"; }
+        else if (rowVersion(target.values) > version) { result = "stale"; }
+        else { toDelete.push(target); delete snap.byId[id]; setTombstone(id, version); result = "deleted"; }
+      } else {
+        var log = it.log;
+        var sheetName = toSheetName(log.project);
+        var found = snap.byId[id];
+        if (tombstoneVersion(id) >= version) {
+          result = "stale"; // 已在較新的時間點被刪除
+        } else if (found && version < rowVersion(found.values)) {
+          result = "stale"; // Sheets 已有較新版本
+        } else if (found && found.sheet.getName() === sheetName) {
+          if (sameBackupRow(found.values, log, version)) {
+            result = "unchanged";
+          } else {
+            ensureVersionHeader(found.sheet);
+            var values = backupRowValues(log, found.values[8] || toDateOrNow(it.createdAt), version);
+            writeVersionedRow(found.sheet, found.row, values);
+            found.values = values;
+            result = "updated";
+          }
+        } else {
+          var sheet = getOrCreateSheet(ss, sheetName);
+          ensureVersionHeader(sheet);
+          var createdAt = found ? (found.values[8] || toDateOrNow(it.createdAt)) : toDateOrNow(it.createdAt);
+          writeVersionedRow(sheet, sheet.getLastRow() + 1, backupRowValues(log, createdAt, version));
+          if (found) { toDelete.push(found); delete snap.byId[id]; result = "updated"; } // 專案名稱變更：搬到新工作表
+          else result = "inserted";
+        }
+      }
+    } catch (err) {
+      result = "error";
+      results.push({ id: id, result: result, message: String(err) });
+      stats.errors++;
+      return;
+    }
+    results.push({ id: id, result: result });
+    stats[result]++;
+  });
+
+  if (opts.deleteExtras) {
+    var keep = {};
+    items.forEach(function(it) { keep[String(it.id || it.log.id)] = true; });
+    Object.keys(snap.byId).forEach(function(id) {
+      var r = snap.byId[id];
+      if (!keep[id] && rowVersion(r.values) < opts.snapshotAt) { toDelete.push(r); stats.deleted++; }
+    });
+  }
+
+  deleteRowsBottomUp(ss, toDelete);
+  return { results: results, stats: stats, managed: snap.managed, unmanaged: snap.unmanaged };
+}
+
+function deleteRowsBottomUp(ss, targets) {
+  var bySheet = {};
+  targets.forEach(function(t) {
+    var name = t.sheet.getName();
+    (bySheet[name] = bySheet[name] || { sheet: t.sheet, rows: [] }).rows.push(t.row);
+  });
+  Object.keys(bySheet).forEach(function(name) {
+    var entry = bySheet[name];
+    entry.rows.sort(function(a, b) { return b - a; }).forEach(function(r) { entry.sheet.deleteRow(r); });
+    removeSheetIfEmpty(ss, entry.sheet);
+  });
+}
+
+function backupApply(ss, ops) {
+  if (ops.length > 500) return { status: "error", code: "BAD_REQUEST", message: "一次最多 500 筆" };
+  var out = applyBackupOps(ss, ops, {});
+  return { status: "success", action: "backupApply", results: out.results, stats: out.stats };
+}
+
+// 完整同步。安全閥：Firestore 為 0 筆，或少於 Sheets 的 80% → 停止，不修改 Sheets
+function fullSync(ss, logs, snapshotAt) {
+  var before = readManagedRows(ss);
+  var base = { status: "success", action: "fullSync", firestoreCount: logs.length, sheetsCount: before.managed, unmanagedRows: before.unmanaged };
+  if (logs.length === 0) { base.result = "STOPPED"; base.reason = "FIRESTORE_EMPTY"; return base; }
+  if (logs.length < before.managed * FULL_SYNC_MIN_RATIO) { base.result = "STOPPED"; base.reason = "FIRESTORE_TOO_FEW"; return base; }
+  var items = logs.map(function(it) {
+    return { op: "upsert", id: it.log.id, log: it.log, version: it.version, createdAt: it.createdAt };
+  });
+  var out = applyBackupOps(ss, items, { deleteExtras: true, snapshotAt: snapshotAt });
+  pruneTombstones(new Date().getTime());
+  base.result = "SYNCED";
+  base.stats = out.stats;
+  return base;
 }
 
 function doOptions(e) {
