@@ -1,67 +1,69 @@
 // 施工工程日誌 API Worker
-// Frontend → (Bearer token) → 本 Worker → (共用密鑰) → Google Apps Script → Google Sheets
+// Frontend → (Bearer token) → 本 Worker → 資料來源（DATA_PROVIDER）
+//   firestore：Worker → Firestore（主要資料庫）→ 非同步備份到 Google Sheets（經 GAS）
+//   gas：      Worker → Google Apps Script → Google Sheets（Phase 3 路徑，回滾用）
 //
 // Secrets（wrangler secret put，不可寫進程式碼或 GitHub）：
 //   PIN_ADMIN / PIN_WORKER   6 位數登入密碼
 //   TOKEN_SECRET             簽發登入 token 用的金鑰（至少 32 字元）
 //   GAS_SHARED_SECRET        與 GAS 指令碼屬性 GAS_SHARED_SECRET 相同
 //   GAS_URL                  GAS 網頁應用程式網址
+//   GCP_SERVICE_ACCOUNT      Firestore 用的 Service Account JSON
 // Vars（wrangler.toml）：
 //   ALLOWED_ORIGINS          允許的前端來源，逗號分隔
+//   DATA_PROVIDER            "firestore" 或 "gas"（未設定時為 gas）
+//   MIGRATION_ENABLED        "true" 時開放 /admin/migrate
 //   TOKEN_TTL_SECONDS        token 有效秒數（選填，預設 12 小時）
+import { ApiError, ERRORS, YMD } from "./errors.js";
+import { gasProvider } from "./providers/gas.js";
+import { firestoreProvider } from "./providers/firestore.js";
+import { processQueue, fullReconcile, backupStatus } from "./backup.js";
+import { migrate, compare } from "./admin.js";
 
 const DEFAULT_TOKEN_TTL_SECONDS = 12 * 60 * 60;
 const MAX_BODY_BYTES = 64 * 1024;
+const MAX_LIMIT = 5000;
+const FULL_SYNC_CRON = "0 19 * * *"; // 台北時間每天 03:00
 
 // ── 角色權限（真正的權限判斷在這裡；前端隱藏按鈕只是使用體驗）──
-// 師傅「只能修改當天日誌」需要雲端上的原始日期，由 GAS 依 Worker 帶入的 actor 判斷
+// 師傅「只能修改當天日誌」依資料庫上的原始日期判斷：firestore 在 Worker 判斷，gas 由 GAS 依 actor 判斷
 const PERMISSIONS = {
   "logs:read":       ["admin", "worker"],
   "logs:create":     ["admin", "worker"],
   "logs:update":     ["admin", "worker"],
   "logs:delete":     ["admin"],
   "projects:delete": ["admin"],
+  "admin":           ["admin"],
 };
-
-// ── 錯誤代碼 → HTTP 狀態與給使用者看的訊息（不外洩內部錯誤）──
-const ERRORS = {
-  INVALID_PIN:    [401, "密碼錯誤，請再試一次"],
-  RATE_LIMITED:   [429, "嘗試次數過多，請稍後再試"],
-  UNAUTHORIZED:   [401, "請重新登入"],
-  TOKEN_EXPIRED:  [401, "登入已逾時，請重新登入"],
-  FORBIDDEN:      [403, "沒有權限執行此操作"],
-  NOT_FOUND:      [404, "找不到資料"],
-  BAD_REQUEST:    [400, "資料格式錯誤"],
-  GAS_ERROR:      [502, "雲端資料庫暫時無法處理，請稍後再試"],
-  INTERNAL_ERROR: [500, "系統錯誤，請稍後再試"],
-};
-
-class ApiError extends Error {
-  constructor(code, message, extra) {
-    super(message || code);
-    this.code = code;
-    this.userMessage = message;
-    this.extra = extra;
-  }
-}
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const cors = corsHeaders(request, env);
     if (!cors) return jsonResponse(errorBody("FORBIDDEN", "來源不被允許"), 403, {});
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
     try {
-      return await route(request, env, cors);
+      return await route(request, env, ctx, cors);
     } catch (err) {
       if (err instanceof ApiError) return errorResponse(err, cors);
       console.error("unhandled", err && err.stack || err);
       return errorResponse(new ApiError("INTERNAL_ERROR"), cors);
     }
   },
+
+  // Cron：每 15 分鐘重試待同步的備份；每天 03:00 完整核對
+  async scheduled(event, env, ctx) {
+    if (env.DATA_PROVIDER !== "firestore") return;
+    const job = event.cron === FULL_SYNC_CRON ? fullReconcile(env) : processQueue(env);
+    ctx.waitUntil(job.catch(err => console.error("scheduled backup failed", event.cron, err && err.message)));
+  },
 };
 
+export function getProvider(env, ctx) {
+  return env.DATA_PROVIDER === "firestore" ? firestoreProvider(env, ctx) : gasProvider(env);
+}
+
 // ── 路由 ──
-async function route(request, env, cors) {
+async function route(request, env, ctx, cors) {
   const url = new URL(request.url);
   const path = url.pathname.replace(/\/+$/, "") || "/";
   const method = request.method;
@@ -71,18 +73,17 @@ async function route(request, env, cors) {
 
   // 以下都需要登入
   const user = await authenticate(request, env);
+  const provider = getProvider(env, ctx);
 
   if (path === "/logs" && method === "GET") {
     authorize(user, "logs:read");
-    const r = await callGas(env, user, { action: "getLogs" });
-    return ok(r.logs || [], cors);
+    return ok(await provider.listLogs(user, parseLogFilter(url)), cors);
   }
   if (path === "/logs" && method === "POST") {
     authorize(user, "logs:create");
     const body = await readJson(request);
     const log = validateLog(body, { requireId: true });
-    const r = await callGas(env, user, { action: "insert", ...log });
-    return ok(r.log || null, cors);
+    return ok(await provider.createLog(user, log), cors);
   }
 
   const logMatch = path.match(/^\/logs\/([^/]+)$/);
@@ -91,14 +92,13 @@ async function route(request, env, cors) {
     const id = validateId(decodeURIComponent(logMatch[1]));
     const body = await readJson(request);
     const log = validateLog(body, { requireId: false });
-    const r = await callGas(env, user, { action: "update", ...log, id });
-    return ok(r.log || null, cors);
+    return ok(await provider.updateLog(user, id, log), cors);
   }
   if (logMatch && method === "DELETE") {
     authorize(user, "logs:delete");
     const id = validateId(decodeURIComponent(logMatch[1]));
     const project = optionalString(url.searchParams.get("project"), 100, "project");
-    await callGas(env, user, { action: "delete", id, project });
+    await provider.deleteLog(user, id, project);
     return ok(null, cors);
   }
 
@@ -106,13 +106,45 @@ async function route(request, env, cors) {
   if (projectMatch && method === "DELETE") {
     authorize(user, "projects:delete");
     const project = requiredString(decodeURIComponent(projectMatch[1]), 100, "project");
-    const r = await callGas(env, user, { action: "deleteProject", project });
-    // 確認 GAS 真的執行了專案刪除（舊版 GAS 不認得此 action）
-    if (r.action !== "deleteProject") throw new ApiError("GAS_ERROR");
-    return ok({ deleted: r.deleted || 0 }, cors);
+    const r = await provider.deleteProject(user, project);
+    // deleted 為 Phase 3 既有欄位（前端使用），deletedCount 為新增別名
+    return ok({ deleted: r.deleted, deletedCount: r.deleted }, cors);
+  }
+
+  // ── 主管專用：遷移、比對、備份 ──
+  if (path.startsWith("/admin/")) {
+    authorize(user, "admin");
+    const flag = name => url.searchParams.get(name) === "1";
+    if (path === "/admin/migrate" && method === "POST") return ok(await migrate(env, user, { dryRun: flag("dryRun"), prune: flag("prune") }), cors);
+    if (path === "/admin/compare" && method === "GET") return ok(await compare(env, user), cors);
+    if (path === "/admin/backup-status" && method === "GET") return ok(await backupStatus(env), cors);
+    if (path === "/admin/backup/retry" && method === "POST") return ok(await processQueue(env), cors);
+    if (path === "/admin/backup/full-sync" && method === "POST") return ok(await fullReconcile(env), cors);
   }
 
   throw new ApiError("NOT_FOUND", "找不到此 API");
+}
+
+// GET /logs 查詢條件：project、date、startDate、endDate、limit（都不帶時回傳全部，與 Phase 3 相同）
+function parseLogFilter(url) {
+  const p = url.searchParams;
+  const filter = {};
+  const project = optionalString(p.get("project"), 100, "project");
+  if (project) filter.project = project;
+  for (const name of ["date", "startDate", "endDate"]) {
+    const v = p.get(name);
+    if (v === null || v === "") continue;
+    if (!YMD.test(v)) throw new ApiError("BAD_REQUEST", `日期格式錯誤：${name}`);
+    filter[name] = v;
+  }
+  if (filter.date && (filter.startDate || filter.endDate)) throw new ApiError("BAD_REQUEST", "date 不能與 startDate / endDate 同時使用");
+  if (filter.startDate && filter.endDate && filter.startDate > filter.endDate) throw new ApiError("BAD_REQUEST", "startDate 不能晚於 endDate");
+  const limit = p.get("limit");
+  if (limit !== null && limit !== "") {
+    if (!/^\d+$/.test(limit) || Number(limit) < 1 || Number(limit) > MAX_LIMIT) throw new ApiError("BAD_REQUEST", `limit 必須是 1～${MAX_LIMIT}`);
+    filter.limit = Number(limit);
+  }
+  return filter;
 }
 
 // ── 登入：PIN（未來可新增 LIFF 等其他登入方式，共用 issueToken）──
@@ -188,38 +220,6 @@ async function hmacKey(env) {
   const secret = env.TOKEN_SECRET || "";
   if (secret.length < 32) throw new Error("TOKEN_SECRET missing or too short");
   return crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
-}
-
-// ── 呼叫 GAS ──
-// 密鑰放在 POST body（GAS 讀不到 header，也避免出現在網址或紀錄中）
-async function callGas(env, user, payload) {
-  if (!env.GAS_URL || !env.GAS_SHARED_SECRET) throw new Error("GAS secrets not configured");
-  let res, data;
-  try {
-    res = await fetch(env.GAS_URL, {
-      method: "POST",
-      headers: { "Content-Type": "text/plain;charset=UTF-8" },
-      body: JSON.stringify({ ...payload, secret: env.GAS_SHARED_SECRET, actor: { role: user.role, sub: user.sub } }),
-      redirect: "follow",
-    });
-    data = await res.json();
-  } catch (err) {
-    console.error("gas fetch failed", payload.action, err && err.message);
-    throw new ApiError("GAS_ERROR");
-  }
-  if (data.status === "success") return data;
-
-  // GAS 回傳的 message 是我們自己寫的中文訊息，只有已知代碼才轉給使用者
-  console.warn("gas error", payload.action, data.code);
-  switch (data.code) {
-    case "NOT_FOUND":      throw new ApiError("NOT_FOUND", data.message);
-    case "FORBIDDEN":      throw new ApiError("FORBIDDEN", data.message);
-    case "BAD_REQUEST":    throw new ApiError("BAD_REQUEST", data.message);
-    case "BUSY":
-    case "PARTIAL_DELETE": throw new ApiError("GAS_ERROR", data.message);
-    case "UNAUTHORIZED":   console.error("GAS rejected shared secret"); throw new ApiError("GAS_ERROR");
-    default:               throw new ApiError("GAS_ERROR");
-  }
 }
 
 // ── 輸入驗證：只轉送白名單欄位 ──

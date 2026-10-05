@@ -1,6 +1,9 @@
 # 施工工程日誌 API Worker
-# Secrets 不寫在這裡，請用：npx wrangler secret put <名稱> [--env test]
-#   PIN_ADMIN, PIN_WORKER, TOKEN_SECRET, GAS_SHARED_SECRET, GAS_URL
+# Secrets 不寫在這裡，請用：npx wrangler@4 secret put <名稱> [--env test | --env=""]
+#   PIN_ADMIN, PIN_WORKER, TOKEN_SECRET, GAS_SHARED_SECRET, GAS_URL, GCP_SERVICE_ACCOUNT
+#
+# DATA_PROVIDER：firestore（主要資料庫為 Firestore）或 gas（回滾：直接讀寫 Sheets）
+# MIGRATION_ENABLED：只在遷移期間設為 "true"
 
 name = "engineering-log-api"
 main = "src/index.js"
@@ -9,6 +12,12 @@ workers_dev = true
 
 [vars]
 ALLOWED_ORIGINS = "https://ethanchen1216.github.io"
+DATA_PROVIDER = "gas"
+MIGRATION_ENABLED = "false"
+
+# 每 15 分鐘重試待同步的備份；每天 19:00 UTC（台北 03:00）完整核對
+[triggers]
+crons = ["*/15 * * * *", "0 19 * * *"]
 
 [[durable_objects.bindings]]
 name = "LOGIN_LIMITER"
@@ -18,12 +27,17 @@ class_name = "LoginLimiter"
 tag = "v1"
 new_sqlite_classes = ["LoginLimiter"]
 
-# ── 測試環境：連到測試用 GAS（備份試算表），另允許本機測試頁 ──
+# ── 測試環境：連到測試用 GAS（備份試算表）與測試用 Firebase 專案，另允許本機測試頁 ──
 [env.test]
 name = "engineering-log-api-test"
 
 [env.test.vars]
 ALLOWED_ORIGINS = "https://ethanchen1216.github.io,http://localhost:8765"
+DATA_PROVIDER = "gas"
+MIGRATION_ENABLED = "false"
+
+[env.test.triggers]
+crons = ["*/15 * * * *", "0 19 * * *"]
 
 [[env.test.durable_objects.bindings]]
 name = "LOGIN_LIMITER"
