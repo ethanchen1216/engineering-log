@@ -103,6 +103,26 @@ def main():
     expect_err("師傅不可刪除單筆", call(base, "DELETE", "/logs/ID_none?project=x", token=tw_), "FORBIDDEN")
     expect_err("師傅不可刪除專案", call(base, "DELETE", "/projects/" + urllib.parse.quote(TEST_PROJECT), token=tw_), "FORBIDDEN")
 
+    print("\n[5b] 回應格式與查詢參數（Phase 4）")
+    logs = call(base, "GET", "/logs", token=ta_)[1].get("data") or []
+    fields = ["id", "date", "project", "weather", "workCategory", "workType", "workerCount", "content", "ts"]
+    check("每筆日誌剛好 9 個欄位", all(list(l.keys()) == fields for l in logs), next((list(l.keys()) for l in logs if list(l.keys()) != fields), None))
+    check("ts 等於 date", all(l["ts"] == l["date"] for l in logs))
+    check("workerCount 不是 JSON 格式（維持「鋼筋:3人」）", not any(l["workerCount"].startswith("{") for l in logs))
+    if logs:
+        q = lambda qs: call(base, "GET", "/logs?" + qs, token=ta_)[1]
+        p = logs[0]["project"]
+        r = q("project=" + urllib.parse.quote(p))
+        check("?project= 只回傳該專案", r.get("success") and all(l["project"] == p for l in r["data"]) and len(r["data"]) == sum(l["project"] == p for l in logs), r.get("error"))
+        r = q("project=" + urllib.parse.quote(p) + "&startDate=2000-01-01")
+        check("?project=&startDate=（需要複合索引）", r.get("success") and len(r["data"]) == sum(l["project"] == p for l in logs), r.get("error"))
+        d0 = logs[0]["date"]
+        r = q("date=" + d0)
+        check("?date= 只回傳該日", r.get("success") and all(l["date"] == d0 for l in r["data"]) and len(r["data"]) > 0, r.get("error"))
+        r = q("limit=1")
+        check("?limit=1", r.get("success") and len(r["data"]) == 1, r.get("error"))
+    expect_err("startDate 晚於 endDate", call(base, "GET", "/logs?startDate=2026-10-02&endDate=2026-10-01", token=ta_), "BAD_REQUEST")
+
     if not args.readonly:
         print(f"\n[6] CRUD 與當天規則（測試專案 {TEST_PROJECT}）")
         def log(i, date, content):
@@ -118,8 +138,20 @@ def main():
         expect_ok("主管刪除單筆", call(base, "DELETE", "/logs/ID_SMOKE_1?project=" + urllib.parse.quote(TEST_PROJECT), token=ta_))
         d = expect_ok("主管刪除整個專案", call(base, "DELETE", "/projects/" + urllib.parse.quote(TEST_PROJECT), token=ta_)) or {}
         check("刪除筆數 = 1", d.get("deleted") == 1, d)
+        if "deletedCount" in d:
+            check("deletedCount 與 deleted 相同", d.get("deletedCount") == d.get("deleted"), d)
         rows = [l for l in (call(base, "GET", "/logs", token=ta_)[1].get("data") or []) if l.get("project") == TEST_PROJECT]
         check("測試資料已全部清除", not rows, len(rows))
+
+        st = call(base, "GET", "/admin/backup-status", token=ta_)[1]
+        if st.get("success"):
+            import time
+            for _ in range(10):
+                if st["data"]["pending"] == 0:
+                    break
+                time.sleep(3)
+                st = call(base, "GET", "/admin/backup-status", token=ta_)[1]
+            check("Sheets 備份已同步（待同步 0 筆）", st["data"]["pending"] == 0, st["data"])
 
     if args.gas:
         print("\n[7] 繞過 Worker 直接呼叫 GAS")
