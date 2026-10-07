@@ -8,7 +8,7 @@
 // 版本保護：每次同步帶 version（Firestore updatedAt 毫秒；刪除為刪除時間），
 //   GAS 只接受 version >= Sheets J 欄「同步版本」的資料，舊版本晚到不會覆蓋新版本。
 import { firestore, toFields, fromFields, docId } from "./firestore/client.js";
-import { callGas } from "./providers/gas.js";
+import { callGas, callGasRead } from "./providers/gas.js";
 import { toApiLog } from "./errors.js";
 
 export const QUEUE = "backupQueue";
@@ -142,7 +142,7 @@ export async function fullReconcile(env) {
     };
   });
 
-  const stats = await callGas(env, SYSTEM_ACTOR, { action: "sheetsStats" });
+  const stats = await callGasRead(env, SYSTEM_ACTOR, { action: "sheetsStats" });
   const sheetsCount = stats.managedRows || 0;
   let result;
   if (items.length === 0) {

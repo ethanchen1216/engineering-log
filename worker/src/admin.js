@@ -3,7 +3,7 @@
 // 避免用較舊的 Sheets 覆蓋 Firestore 上的最新資料。
 import { ApiError, LOG_FIELDS, YMD } from "./errors.js";
 import { firestore, toFields, fromFields, docId } from "./firestore/client.js";
-import { callGas } from "./providers/gas.js";
+import { callGasRead } from "./providers/gas.js";
 import { LOGS } from "./providers/firestore.js";
 
 const ID_RE = /^[A-Za-z0-9_-]{1,80}$/;
@@ -12,7 +12,7 @@ const COLS = ["A 日期", "B 專案名稱", "C 天氣", "D 工程類別", "E 出
 
 // 讀取 Sheets 全部資料並分類：有效、無效、重複 ID、缺少 ID、警告
 async function readSheets(env, user) {
-  const r = await callGas(env, user, { action: "exportAll" });
+  const r = await callGasRead(env, user, { action: "exportAll" });
   const rows = r.rows || [];
   const count = new Map();
   for (const row of rows) if (row.id) count.set(row.id, (count.get(row.id) || 0) + 1);

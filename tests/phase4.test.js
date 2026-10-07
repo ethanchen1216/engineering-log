@@ -105,6 +105,17 @@ test("migration：回報缺少 ID、重複 ID、無效日期、儲存格型態�
   assert.equal(cmp.allMatch, false);
 });
 
+test("GAS 暫時失敗：只讀呼叫（exportAll）自動重試一次", async () => {
+  const w = await createWorld({ provider: "gas", seed: SEED });
+  const admin = await w.login("admin");
+  w.gas.failOnce = 1;
+  const r = await w.call("POST", "/admin/migrate?dryRun=1", { token: admin });
+  assert.equal(r.body.success, true, JSON.stringify(r.body));
+  assert.equal(r.body.data.valid, 4);
+  w.gas.failOnce = 2; // 連續失敗兩次 → 回報錯誤，不會無限重試
+  assert.equal((await w.call("POST", "/admin/migrate?dryRun=1", { token: admin })).body.error, "GAS_ERROR");
+});
+
 // ── API 相容 ──
 test("API 相容：GAS 與 Firestore 的 GET 回應完全相同（9 個欄位）", async () => {
   const { w, admin } = await migratedWorld();

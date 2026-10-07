@@ -32,6 +32,20 @@ export async function callGas(env, actor, payload) {
   }
 }
 
+// 只讀的系統呼叫（exportAll、sheetsStats）：GAS 偶爾會暫時失敗，自動重試一次（不會修改資料，重試安全）
+const READ_ONLY_ACTIONS = ["exportAll", "sheetsStats", "getLogs"];
+export async function callGasRead(env, actor, payload) {
+  if (!READ_ONLY_ACTIONS.includes(payload.action)) throw new Error("callGasRead only for read-only actions");
+  try {
+    return await callGas(env, actor, payload);
+  } catch (err) {
+    if (!(err instanceof ApiError) || err.code !== "GAS_ERROR") throw err;
+    console.warn("gas read retry", payload.action);
+    await new Promise(r => setTimeout(r, 1500));
+    return callGas(env, actor, payload);
+  }
+}
+
 // 查詢條件在 Worker 端套用（GAS 只會回傳全部資料，已依日期由新到舊排序）
 export function applyLogFilter(logs, filter) {
   let out = logs;

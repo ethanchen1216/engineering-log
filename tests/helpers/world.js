@@ -55,6 +55,7 @@ export async function createWorld({ provider = "firestore", migration = "true", 
     const u = String(url);
     if (u.startsWith(GAS_URL)) {
       if (gas.fail) throw new TypeError("fetch failed");
+      if (gas.failOnce > 0) { gas.failOnce--; throw new TypeError("fetch failed"); }
       const out = (init.method || "GET") === "POST" ? gas.post(JSON.parse(init.body)) : gas.get();
       return new Response(JSON.stringify(out), { headers: { "Content-Type": "application/json" } });
     }
