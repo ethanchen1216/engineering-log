@@ -138,6 +138,7 @@
         .log-content { font-size: 13px; color: #5c6b7a; line-height: 1.65; white-space: pre-wrap; }
         .empty-state { text-align: center; padding: 3rem 1rem; color: #9aa5b4; }
         .empty-state i { font-size: 44px; margin-bottom: 12px; display: block; color: #dde1e7; }
+        .load-more { width: 100%; justify-content: center; margin: 4px 0 12px; padding: 10px 13px; }
 
         /* ── 彈窗 ── */
         .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 1rem; }
@@ -608,7 +609,53 @@
         catch(e) { console.warn("本地備份失敗（可能超過容量）", e); }
     }
     function renderAll() {
+        ensureProjectSelected();
         renderStats(); renderTagFilter(); renderProjectHistory(); renderLogs();
+    }
+
+    // ── 專案選取（只用手機上已載入的資料計算，不增加網路請求）──
+    const DAYS_STEP = 7;          // 列表預設顯示該專案最後一筆往前 7 天；「顯示更早」每次多 7 天
+    let visibleDays = DAYS_STEP;
+    function logDate(l) { return l.date || l.ts || ""; }
+    function todayYMD() {
+        const t = new Date();
+        return `${t.getFullYear()}-${String(t.getMonth()+1).padStart(2,"0")}-${String(t.getDate()).padStart(2,"0")}`;
+    }
+    // 專案依建立時間（該專案最早一筆日誌的日期）由舊到新
+    function projectsByAge() {
+        const first = new Map();
+        for (const l of logs) {
+            const d = logDate(l);
+            if (!first.has(l.project) || d < first.get(l.project)) first.set(l.project, d);
+        }
+        return [...first.keys()].sort((a, b) => first.get(a).localeCompare(first.get(b)) || a.localeCompare(b));
+    }
+    // 預設專案：依建立順序，第一個今天還沒填日報的專案；都填過了就選最舊的專案
+    function pickDefaultProject() {
+        const projects = projectsByAge();
+        const today = todayYMD();
+        const filledToday = new Set(logs.filter(l => logDate(l) === today).map(l => l.project));
+        return projects.find(p => !filledToday.has(p)) || projects[0] || "";
+    }
+    function ensureProjectSelected() {
+        if (filterProject && logs.some(l => l.project === filterProject)) return;
+        filterProject = pickDefaultProject();
+        visibleDays = DAYS_STEP;
+    }
+    function shiftDays(ymd, n) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return "";
+        const d = new Date(ymd + "T00:00:00Z");
+        d.setUTCDate(d.getUTCDate() + n);
+        return d.toISOString().slice(0, 10);
+    }
+    // 每次多 7 天；遇到中間有停工（那 7 天沒有紀錄）就繼續往前，確保按一次至少多顯示一筆
+    function showOlderLogs() {
+        const dates = logs.filter(l => l.project === filterProject).map(logDate);
+        const latest = dates.reduce((m, d) => (d > m ? d : m), "");
+        const cutoff = shiftDays(latest, -(visibleDays - 1));
+        const nextOlder = dates.filter(d => d < cutoff).reduce((m, d) => (d > m ? d : m), "");
+        do { visibleDays += DAYS_STEP; } while (nextOlder && shiftDays(latest, -(visibleDays - 1)) > nextOlder);
+        renderLogs();
     }
     // 寫入成功後只更新本地資料（不重新讀取全部），再備份並重繪
     function commitLocalChange() {
@@ -715,6 +762,8 @@
         hideLoading();
         // 失敗：不動本地資料、不清空表單，讓使用者重試
         if (!res.success) { showApiError(res); return; }
+        // 切換到剛儲存的專案，才看得到剛存的那筆（列表不再有「全部」）
+        if (filterProject !== project) { filterProject = project; visibleDays = DAYS_STEP; }
         if (!res.data) {
             await loadLogs(true); // 舊版 GAS 不回傳日誌時的相容做法
         } else if (isEdit) {
@@ -804,10 +853,9 @@
 
     // ── 篩選標籤 ──
     function renderTagFilter() {
-        const projects = [...new Set(logs.map(l => l.project))];
+        const projects = projectsByAge();
         const el = $("tagFilter");
         if (!projects.length) { el.innerHTML=""; return; }
-        const allBtn = `<span class="tag${!filterProject?" active":""}" onclick="setFilter('')">全部</span>`;
         const btns = projects.map(p => {
             // sa 會放進雙引號包住的 onclick 屬性：先跳脫 JS 字串，再跳脫 HTML
             const sd = escapeHtml(p), sa = escapeHtml(escapeAttr(p));
@@ -819,9 +867,9 @@
                 ontouchstart="startLongPress('${sa}')" ontouchend="cancelLongPress()"
                 style="overflow:visible">${sd}${delBtn}</span>`;
         }).join("");
-        el.innerHTML = allBtn + btns;
+        el.innerHTML = btns;
     }
-    function setFilter(p) { filterProject = p; deleteMode = ""; renderTagFilter(); renderLogs(); }
+    function setFilter(p) { filterProject = p; visibleDays = DAYS_STEP; deleteMode = ""; renderTagFilter(); renderLogs(); }
     function startLongPress(p) {
         longPressTimer = setTimeout(() => { deleteMode = deleteMode===p?"":p; renderTagFilter(); }, 600);
     }
@@ -869,20 +917,30 @@
         const today = new Date();
         const todayStr = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,"0")}-${String(today.getDate()).padStart(2,"0")}`;
 
-        const filtered = logs
+        const inProject = logs
             .map((l,i) => ({...l, _idx:i}))
-            .filter(l => {
-                const mQ = !q || l.project.toLowerCase().includes(q) || (l.content||"").toLowerCase().includes(q);
-                const mP = !filterProject || l.project === filterProject;
-                return mQ && mP;
-            })
-            .sort((a, b) => new Date(b.date || b.ts || 0).getTime() - new Date(a.date || a.ts || 0).getTime());
+            .filter(l => l.project === filterProject);
+
+        // 只顯示該專案最後一筆往前 visibleDays 天；搜尋時不受天數限制（搜尋該專案全部資料）
+        let filtered, olderCount = 0;
+        if (q) {
+            filtered = inProject.filter(l => l.project.toLowerCase().includes(q) || (l.content||"").toLowerCase().includes(q));
+        } else {
+            const latest = inProject.reduce((m, l) => (logDate(l) > m ? logDate(l) : m), "");
+            const cutoff = shiftDays(latest, -(visibleDays - 1));
+            filtered = cutoff ? inProject.filter(l => logDate(l) >= cutoff) : inProject;
+            olderCount = inProject.length - filtered.length;
+        }
+        filtered.sort((a, b) => new Date(b.date || b.ts || 0).getTime() - new Date(a.date || a.ts || 0).getTime());
 
         if (!filtered.length) {
             el.innerHTML = `<div class="empty-state"><i class="ti ti-clipboard-off"></i><p>${logs.length?"沒有符合條件的日誌":"尚無任何日誌，儲存第一筆紀錄吧！"}</p></div>`;
             return;
         }
 
+        const moreBtn = olderCount
+            ? `<button class="btn-ghost load-more" onclick="showOlderLogs()"><i class="ti ti-history"></i> 顯示更早的紀錄（再 ${DAYS_STEP} 天，尚有 ${olderCount} 筆）</button>`
+            : "";
         el.innerHTML = filtered.map(l => {
             const ri = l._idx;
             const counts = parseWorkerCount(l.workerCount);
@@ -922,7 +980,7 @@
                 ${workInfo}
                 ${l.content?`<div class="log-content">${escapeHtml(l.content)}</div>`:""}
             </div>`;
-        }).join("");
+        }).join("") + moreBtn;
     }
 
     // ── 匯出 CSV ──
