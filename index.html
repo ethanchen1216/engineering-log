@@ -43,10 +43,15 @@
         /* ── 表單 ── */
         .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
         .field-row.single { grid-template-columns: 1fr; }
+        .field-row > .field-group { min-width: 0; } /* grid 子項預設會被內容撐開（iOS 日期欄位會因此壓到旁邊欄位） */
         .field-group label { display: block; font-size: 13px; color: #5c6b7a; margin-bottom: 4px; }
         .field-group input, .field-group select, .field-group textarea { width: 100%; border: 1px solid #dde1e7; background: #fafbfc; color: #1a2332; border-radius: 6px; padding: 8px 10px; font-size: 14px; font-family: inherit; outline: none; transition: border-color 0.15s, box-shadow 0.15s; }
         .field-group input:focus, .field-group select:focus, .field-group textarea:focus { border-color: #e8870a; box-shadow: 0 0 0 3px rgba(232,135,10,0.12); background: #fff; }
         .field-group textarea { resize: vertical; min-height: 90px; line-height: 1.6; }
+        /* iOS Safari 的日期欄位有原生最小寬度、置中文字與不同高度：移除原生外觀，與其他欄位一致 */
+        .field-group > input, .field-group > select { height: 38px; }
+        .field-group input[type="date"] { -webkit-appearance: none; appearance: none; min-width: 0; display: block; text-align: left; }
+        .field-group input[type="date"]::-webkit-date-and-time-value { text-align: left; margin: 0; }
         .field-group select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%23888' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 10px center; padding-right: 28px; }
 
         /* ── 類別按鈕 ── */
